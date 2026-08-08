@@ -1,0 +1,38 @@
+# Capability Registry — swarmVine
+# Machine-readable declaration of this primal's IPC surface.
+# Used by primalSpring ecosystem tooling and biomeOS routing.
+
+[meta]
+primal = "swarmvine"
+version = "0.1.0"
+wire_standard = "L2"
+method_gate = "JH-0"
+btsp_phase = 3
+gossip_domains = ["tower", "data", "compute"]
+
+[capabilities.health]
+owner = "swarmvine"
+methods = [
+    "health.liveness",
+    "health.readiness",
+    "health.check",
+]
+
+[capabilities.lifecycle]
+owner = "swarmvine"
+methods = [
+    "capabilities.list",
+    "primal.announce",
+    "btsp.negotiate",
+]
+
+[capabilities.gossip]
+owner = "swarmvine"
+methods = [
+    "gossip.spread",
+    "gossip.inject",
+    "gossip.query",
+    "gossip.subscribe",
+    "gossip.status",
+    "gossip.peers",
+]

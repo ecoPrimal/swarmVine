@@ -1,0 +1,67 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = []
+all-features = true
+
+[advisories]
+yanked = "deny"
+ignore = []
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+    "BSL-1.0",
+    "AGPL-3.0-or-later",
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+allow-wildcard-paths = true
+
+# ecoBin v3.0: C-backed crates banned from application builds.
+# blake3 uses cc for optional SIMD backends; use features = ["pure"] if possible,
+# but cc is allowed as a wrapper for blake3 per ecosystem convergence standard.
+deny = [
+    { crate = "openssl-sys", wrappers = [] },
+    { crate = "openssl-src", wrappers = [] },
+    { crate = "native-tls", wrappers = [] },
+    { crate = "aws-lc-sys", wrappers = [] },
+    { crate = "cmake", wrappers = [] },
+    { crate = "cc", wrappers = ["blake3", "iana-time-zone-haiku"] },
+    { crate = "bindgen", wrappers = [] },
+    { crate = "bzip2-sys", wrappers = [] },
+    { crate = "curl-sys", wrappers = [] },
+    { crate = "libz-sys", wrappers = [] },
+    { crate = "pkg-config", wrappers = [] },
+    { crate = "vcpkg", wrappers = [] },
+    { crate = "zstd-sys", wrappers = [] },
+    { crate = "lz4-sys", wrappers = [] },
+    { crate = "libsqlite3-sys", wrappers = [] },
+    { crate = "cryptoki-sys", wrappers = [] },
+    { crate = "ring", wrappers = [], reason = "C crypto — ecosystem uses RustCrypto" },
+]
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

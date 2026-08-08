@@ -1,0 +1,29 @@
+[package]
+name = "swarmvine-server"
+description = "Dual-protocol server for swarmVine (JSON-RPC + tarpc)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "swarmvine"
+path = "src/main.rs"
+
+[dependencies]
+swarmvine-core = { path = "../swarmvine-core" }
+tokio = { workspace = true, features = ["fs"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+tarpc = { workspace = true }
+tokio-serde = { workspace = true }
+futures = { workspace = true }
+hostname = { workspace = true }
