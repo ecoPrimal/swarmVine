@@ -10,6 +10,7 @@ mod announce;
 mod dispatch;
 mod method_gate;
 mod server;
+mod spread;
 mod tarpc_server;
 
 use anyhow::Result;
@@ -42,6 +43,16 @@ struct Cli {
     /// Gossip eviction interval in seconds (default 120).
     #[arg(long, env = "GOSSIP_EVICT_INTERVAL", default_value = "120")]
     evict_interval: u64,
+
+    /// Epidemic sweep interval in seconds (default 30).
+    /// How often to drain the forward queue and push to mesh peers.
+    #[arg(long, env = "GOSSIP_SPREAD_INTERVAL", default_value = "30")]
+    spread_interval: u64,
+
+    /// TCP port for cross-gate gossip (default 7800).
+    /// Other gates' swarmVine instances connect here to exchange gossip.
+    #[arg(long, env = "GOSSIP_PORT", default_value = "7800")]
+    gossip_port: u16,
 }
 
 #[tokio::main]
@@ -91,6 +102,22 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Epidemic spread task — drains forward queue → pushes to mesh peers
+    let spread_primal = Arc::clone(&primal_arc);
+    let spread_interval = cli.spread_interval;
+    tokio::spawn(async move {
+        spread::epidemic_loop(spread_primal, spread_interval).await;
+    });
+
+    // Cross-gate gossip TCP listener — remote swarmVine instances connect here
+    let gossip_port = cli.gossip_port;
+    let gossip_primal = Arc::clone(&primal_arc);
+    tokio::spawn(async move {
+        if let Err(e) = run_gossip_listener(gossip_port, gossip_primal).await {
+            tracing::error!(error = %e, "Cross-gate gossip listener failed");
+        }
+    });
+
     if !cli.disable_tarpc && !cli.negotiate {
         tarpc_server::start_tarpc_listener(
             "swarmvine",
@@ -115,4 +142,25 @@ async fn main() -> Result<()> {
         cli.negotiate,
     )
     .await
+}
+
+/// TCP listener for cross-gate gossip exchange.
+///
+/// Remote swarmVine instances connect here to push `gossip.spread` entries.
+/// Uses the same riboCipher + JSON-RPC protocol as the main server.
+async fn run_gossip_listener(
+    port: u16,
+    primal: Arc<swarmvine_core::SwarmVinePrimal>,
+) -> Result<()> {
+    let addr = format!("0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!(port, "Cross-gate gossip listener started");
+
+    let gate = method_gate::MethodGate::permissive();
+
+    loop {
+        let (stream, peer_addr) = listener.accept().await?;
+        tracing::debug!(peer = %peer_addr, "Cross-gate gossip connection");
+        server::handle_tcp_connection(stream, &*primal, &gate).await;
+    }
 }

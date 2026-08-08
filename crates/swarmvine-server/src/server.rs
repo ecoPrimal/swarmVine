@@ -160,6 +160,15 @@ const SIGNAL_CLEAR: u8 = 0xEC;
 const SIGNAL_MITO: u8 = 0xED;
 const SIGNAL_NUCLEAR: u8 = 0xEE;
 
+/// Handle a cross-gate TCP connection (public entry point for gossip listener).
+pub async fn handle_tcp_connection(
+    stream: tokio::net::TcpStream,
+    primal: &swarmvine_core::SwarmVinePrimal,
+    gate: &crate::method_gate::MethodGate,
+) {
+    handle_connection(stream, primal, gate).await;
+}
+
 async fn handle_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     mut stream: S,
     primal: &swarmvine_core::SwarmVinePrimal,
