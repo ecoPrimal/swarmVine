@@ -58,6 +58,17 @@ All gossip methods plus baseline health/capabilities — binary framing via binc
 
 Remote swarmVine instances connect here for `gossip.spread` exchange using riboCipher clear signal (`0xEC 0x01`).
 
+### Platform Support
+
+| Platform | JSON-RPC | tarpc | Cross-gate TCP |
+|----------|----------|-------|----------------|
+| Linux (musl/gnu) | UDS | UDS | TCP |
+| aarch64 | UDS | UDS | TCP |
+| Windows (gnu) | TCP fallback | Not yet (graceful `Unsupported`) | TCP |
+
+All UDS call sites use `swarmvine_core::transport` abstraction or `#[cfg(unix)]` gating.
+Windows compilation unblocked (Wave 157d).
+
 ## Gossip Domains
 
 | Domain | Layer | Example Entries |

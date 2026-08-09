@@ -46,20 +46,14 @@ pub(crate) async fn run(
 
     match &endpoint {
         TransportEndpoint::Uds { path } => {
-            let socket_path = std::path::PathBuf::from(path);
-            if let Some(parent) = socket_path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            let _ = tokio::fs::remove_file(&socket_path).await;
-
-            let listener = tokio::net::UnixListener::bind(&socket_path)?;
+            let listener = swarmvine_core::transport::bind_transport(&endpoint).await?;
             if negotiate {
                 info!("Listening on unix://{path} [G65 protocol negotiation]");
             } else {
                 info!("Listening on unix://{path}");
             }
 
-            let announce_socket = socket_path.clone();
+            let announce_socket = std::path::PathBuf::from(path);
             let announce_family = family_id.unwrap_or("ecoPrimal").to_owned();
             let announce_name = primal_name.to_owned();
             let register_name = primal_name.to_owned();
@@ -74,11 +68,10 @@ pub(crate) async fn run(
                 crate::announce::register_with_songbird(&register_name, &register_endpoint).await;
             });
 
-            // Phase 2: spawn per-connection handlers with Arc<SwarmVinePrimal> + Arc<MethodGate>.
             loop {
                 tokio::select! {
                     accept = listener.accept() => {
-                        let (stream, _) = accept?;
+                        let stream = accept?;
                         if negotiate {
                             handle_negotiated_connection(stream, primal, &gate).await;
                         } else {

@@ -23,6 +23,7 @@ This primal follows the ecoPrimals coding conventions (wateringHole standards).
 - **Cross-gate**: TCP with riboCipher clear signal + `gossip.spread` batch
 - **tarpc**: Dedicated `.tarpc.sock` with bincode framing (G64 Cephalization)
 - **G65**: Single-socket protocol negotiation (documented tarpc 0.37 limitation)
+- **Windows**: All UDS call sites use `transport.rs` abstraction or `#[cfg(unix)]` gating. tarpc UDS → graceful `Unsupported` on non-Unix. TCP gossip is platform-agnostic.
 
 ## CI Gates
 

@@ -285,9 +285,12 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
         },
     });
 
+    let endpoint = swarmvine_core::transport::TransportEndpoint::Uds {
+        path: sock_path.clone(),
+    };
     let Ok(Ok(stream)) = timeout(
         Duration::from_millis(500),
-        tokio::net::UnixStream::connect(&sock_path),
+        swarmvine_core::transport::connect_transport(&endpoint),
     )
     .await
     else {
@@ -295,7 +298,7 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
         return true;
     };
 
-    let (mut rd, mut wr) = stream.into_split();
+    let (mut rd, mut wr) = tokio::io::split(stream);
 
     let mut frame = ribocipher::CLEAR_JSONRPC.to_vec();
     frame.extend_from_slice(

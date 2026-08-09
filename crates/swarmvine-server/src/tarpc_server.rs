@@ -3,10 +3,15 @@
 //! Dual-socket pattern (G64 Cephalization):
 //! - JSON-RPC on `{name}.sock` — the lifecycle anchor
 //! - tarpc on `{name}.tarpc.sock` — spawned as background task
+//!
+//! On non-Unix platforms, the UDS listener is unavailable. `start_tarpc_listener`
+//! returns immediately with a log message. tarpc-over-TCP is a future evolution.
 
 use anyhow::Result;
+#[cfg(unix)]
 use futures::StreamExt;
 use swarmvine_core::tarpc_service::SwarmVineService;
+#[cfg(unix)]
 use tarpc::server::{self, Channel};
 use tracing::{info, warn};
 
@@ -36,6 +41,11 @@ fn tarpc_endpoint(primal_name: &str, family_id: Option<&str>) -> String {
 ///
 /// This runs as a background task — the JSON-RPC listener remains the
 /// primary accept loop and the primal's lifecycle anchor.
+///
+/// On non-Unix platforms, tarpc UDS transport is unavailable. This function
+/// logs a notice and returns immediately. tarpc-over-TCP is a future evolution
+/// (the `tcp` feature is already enabled in the workspace).
+#[cfg(unix)]
 pub(crate) async fn start_tarpc_listener(
     primal_name: &str,
     family_id: Option<&str>,
@@ -76,6 +86,17 @@ pub(crate) async fn start_tarpc_listener(
         }
     });
 
+    Ok(())
+}
+
+/// Non-Unix stub — tarpc UDS transport is not available.
+#[cfg(not(unix))]
+pub(crate) async fn start_tarpc_listener(
+    _primal_name: &str,
+    _family_id: Option<&str>,
+    _primal: std::sync::Arc<swarmvine_core::SwarmVinePrimal>,
+) -> Result<()> {
+    info!("tarpc listener not available on this platform (UDS-only)");
     Ok(())
 }
 

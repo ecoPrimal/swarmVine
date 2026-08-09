@@ -69,9 +69,14 @@ pub struct CapabilitiesResponse {
 /// Returns a tarpc client stub ready for sub-ms binary RPC calls.
 /// Falls back to `$XDG_RUNTIME_DIR/biomeos/{name}.tarpc.sock` if no path given.
 ///
+/// On non-Unix platforms, returns `Unsupported` — tarpc UDS transport is
+/// not available. tarpc-over-TCP is a future evolution.
+///
 /// # Errors
 ///
-/// Returns an error if the socket doesn't exist or connection fails.
+/// Returns an error if the socket doesn't exist, connection fails, or the
+/// platform does not support UDS.
+#[cfg(unix)]
 pub async fn connect(socket_path: Option<&str>) -> Result<SwarmVineServiceClient, std::io::Error> {
     let default_path = {
         let runtime_dir =
@@ -84,4 +89,17 @@ pub async fn connect(socket_path: Option<&str>) -> Result<SwarmVineServiceClient
         tarpc::serde_transport::unix::connect(path, tokio_serde::formats::Bincode::default).await?;
 
     Ok(SwarmVineServiceClient::new(tarpc::client::Config::default(), transport).spawn())
+}
+
+/// Non-Unix stub — tarpc UDS transport is not available on this platform.
+///
+/// # Errors
+///
+/// Always returns `Unsupported`.
+#[cfg(not(unix))]
+pub async fn connect(_socket_path: Option<&str>) -> Result<SwarmVineServiceClient, std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "tarpc UDS transport not available on this platform",
+    ))
 }
