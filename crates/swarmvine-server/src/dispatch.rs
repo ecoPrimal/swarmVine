@@ -3,6 +3,21 @@
 use swarmvine_core::{GossipEntry, GossipTopic, IngestResult, PrimalHealth};
 use crate::method_gate::MethodGate;
 
+fn skunkbat_sock_path() -> String {
+    std::env::var("SWARMVINE_SKUNKBAT_SOCK")
+        .unwrap_or_else(|_| "/run/membrane/skunkbat.sock".to_string())
+}
+
+/// Whether the vine-bat pre-accept hook is enabled. Disabled in test builds
+/// unless SWARMVINE_SKUNKBAT_SOCK is explicitly set.
+fn vine_bat_enabled() -> bool {
+    if cfg!(test) {
+        std::env::var("SWARMVINE_SKUNKBAT_SOCK").is_ok()
+    } else {
+        true
+    }
+}
+
 const PRIMAL_NAME: &str = "swarmVine";
 const PRIMAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -172,6 +187,13 @@ async fn handle_gossip_spread(
             }
         };
 
+        // Vine-bat loop: pre-accept validation via skunkBat metadata.analyze
+        if !vine_bat_preaccept(&entry).await {
+            tracing::debug!(key = %entry.key, "vine-bat REJECT from skunkBat");
+            rejected += 1;
+            continue;
+        }
+
         match primal.engine().ingest(entry, Some(from_peer)).await {
             IngestResult::Accepted => accepted += 1,
             _ => rejected += 1,
@@ -257,6 +279,85 @@ async fn handle_gossip_peers(
         "peer_count": peers.len(),
         "peers": peers,
     })
+}
+
+/// Vine-bat pre-accept: call skunkBat `metadata.analyze` to validate a gossip entry
+/// before accepting it from a remote peer. If skunkBat is unreachable, default to allow
+/// (graceful degradation — bat validates when available, vine spreads regardless).
+async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::timeout;
+    use std::time::Duration;
+
+    if !vine_bat_enabled() {
+        return true;
+    }
+    let sock_path = skunkbat_sock_path();
+    if !std::path::Path::new(&sock_path).exists() {
+        return true;
+    }
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "metadata.analyze",
+        "params": {
+            "topic": entry.topic,
+            "key": entry.key,
+            "origin_gate": entry.origin_gate,
+            "ttl": entry.ttl,
+            "payload": entry.payload,
+            "created_at_epoch": entry.created_at_epoch,
+            "expires_at_epoch": entry.expires_at_epoch,
+        },
+    });
+
+    let stream = match timeout(
+        Duration::from_millis(500),
+        tokio::net::UnixStream::connect(&sock_path),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        _ => {
+            tracing::debug!("vine-bat: skunkBat unreachable — default allow");
+            return true;
+        }
+    };
+
+    let (mut rd, mut wr) = stream.into_split();
+
+    let mut frame = vec![0xEC, 0x01];
+    frame.extend_from_slice(serde_json::to_string(&request).unwrap_or_default().as_bytes());
+    frame.push(b'\n');
+
+    if wr.write_all(&frame).await.is_err() {
+        return true;
+    }
+    let _ = wr.shutdown().await;
+
+    let mut buf = Vec::with_capacity(4096);
+    let _ = timeout(Duration::from_millis(500), rd.read_to_end(&mut buf)).await;
+
+    // Strip riboCipher prefix if present
+    let json_start = if buf.len() >= 2 && buf[0] == 0xEC && buf[1] == 0x01 { 2 } else { 0 };
+    let text = match std::str::from_utf8(&buf[json_start..]) {
+        Ok(t) => t.trim(),
+        Err(_) => return true,
+    };
+
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+        let verdict = val
+            .get("result")
+            .and_then(|r| r.get("verdict"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("allow");
+        return match verdict {
+            "deny" | "reject" => false,
+            _ => true, // allow, warn → pass through
+        };
+    }
+    true
 }
 
 fn error_response(id: serde_json::Value, code: i32, message: &str) -> String {
