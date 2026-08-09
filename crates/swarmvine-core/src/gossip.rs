@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, info};
 
 /// Default TTL for gossip entries (max hops before drop).
@@ -171,6 +171,22 @@ pub struct GossipStats {
     pub total_evicted: u64,
 }
 
+/// Notification emitted to subscribers when a gossip entry is ingested.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipNotification {
+    /// Which topic the entry belongs to.
+    pub topic: GossipTopic,
+    /// The entry key.
+    pub key: String,
+    /// The originating gate.
+    pub origin_gate: String,
+    /// Entry version (monotonic).
+    pub version: u64,
+}
+
+/// Broadcast channel capacity for gossip subscriptions.
+const SUBSCRIPTION_CAPACITY: usize = 256;
+
 /// The gossip engine — stores entries, handles dedup, eviction, and forwarding.
 pub struct GossipEngine {
     /// Our gate identity.
@@ -188,6 +204,8 @@ pub struct GossipEngine {
     /// Counters.
     total_ingested: Arc<std::sync::atomic::AtomicU64>,
     total_evicted: Arc<std::sync::atomic::AtomicU64>,
+    /// Broadcast sender for subscription notifications.
+    subscription_tx: broadcast::Sender<GossipNotification>,
 }
 
 impl GossipEngine {
@@ -199,6 +217,8 @@ impl GossipEngine {
         entries.insert(GossipTopic::Data, HashMap::new());
         entries.insert(GossipTopic::Compute, HashMap::new());
 
+        let (subscription_tx, _) = broadcast::channel(SUBSCRIPTION_CAPACITY);
+
         Self {
             node_id,
             entries: Arc::new(RwLock::new(entries)),
@@ -208,6 +228,7 @@ impl GossipEngine {
             forward_queue: Arc::new(RwLock::new(Vec::new())),
             total_ingested: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             total_evicted: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            subscription_tx,
         }
     }
 
@@ -215,6 +236,23 @@ impl GossipEngine {
     #[must_use]
     pub fn node_id(&self) -> &str {
         &self.node_id
+    }
+
+    /// Subscribe to gossip notifications.
+    ///
+    /// Returns a receiver that yields a [`GossipNotification`] for every
+    /// successfully ingested entry. Subscribers that fall behind by more
+    /// than [`SUBSCRIPTION_CAPACITY`] entries will receive a `Lagged` error
+    /// and can resume from the current position.
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<GossipNotification> {
+        self.subscription_tx.subscribe()
+    }
+
+    /// Number of active subscribers on the broadcast channel.
+    #[must_use]
+    pub fn subscriber_count(&self) -> usize {
+        self.subscription_tx.receiver_count()
     }
 
     /// Ingest a gossip entry received from a peer (or locally injected).
@@ -316,6 +354,14 @@ impl GossipEngine {
 
         self.total_ingested
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        // Notify subscribers (best-effort: if no one is listening, this is a no-op).
+        let _ = self.subscription_tx.send(GossipNotification {
+            topic: entry.topic,
+            key: entry.key.clone(),
+            origin_gate: entry.origin_gate.clone(),
+            version: entry.version,
+        });
 
         debug!(
             topic = %entry.topic,
@@ -478,6 +524,128 @@ fn generate_nonce() -> String {
     let pid = u64::from(std::process::id());
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{ts:032x}{pid:08x}{seq:08x}")
+}
+
+// --- Phase 4: Domain-specific payload types ---
+
+/// Bloom filter for compact set-membership queries (Data domain: `cas.have`).
+///
+/// Fixed-size bit array with `k` hash functions. Allows a gate to advertise
+/// which CAS objects it holds without transmitting a full hash list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BloomFilter {
+    /// Bit array encoded as hex string for JSON transport.
+    pub bits: Vec<u8>,
+    /// Number of hash functions used.
+    pub k: u8,
+    /// Number of items inserted (for false-positive rate estimation).
+    pub item_count: u32,
+}
+
+impl BloomFilter {
+    /// Create a new bloom filter with the given bit size (in bytes) and hash count.
+    #[must_use]
+    pub fn new(byte_size: usize, k: u8) -> Self {
+        Self {
+            bits: vec![0u8; byte_size],
+            k,
+            item_count: 0,
+        }
+    }
+
+    /// Insert a key into the filter using FNV-1a inspired multi-hashing.
+    pub fn insert(&mut self, key: &[u8]) {
+        let bit_count = self.bits.len() * 8;
+        if bit_count == 0 {
+            return;
+        }
+        let (h1, h2) = double_hash(key);
+        for i in 0..u64::from(self.k) {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % (bit_count as u64);
+            let byte_idx = (idx / 8) as usize;
+            self.bits[byte_idx] |= 1 << (idx % 8);
+        }
+        self.item_count += 1;
+    }
+
+    /// Check whether a key might be in the filter (false positives possible).
+    #[must_use]
+    pub fn maybe_contains(&self, key: &[u8]) -> bool {
+        let bit_count = self.bits.len() * 8;
+        if bit_count == 0 {
+            return false;
+        }
+        let (h1, h2) = double_hash(key);
+        for i in 0..u64::from(self.k) {
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % (bit_count as u64);
+            let byte_idx = (idx / 8) as usize;
+            if self.bits[byte_idx] & (1 << (idx % 8)) == 0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Simple double-hash for bloom filter indexing (FNV-1a based, no external dep).
+fn double_hash(key: &[u8]) -> (u64, u64) {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+    let mut h1 = FNV_OFFSET;
+    for &b in key {
+        h1 ^= u64::from(b);
+        h1 = h1.wrapping_mul(FNV_PRIME);
+    }
+    let mut h2 = FNV_OFFSET ^ 0x5555_5555_5555_5555;
+    for &b in key {
+        h2 ^= u64::from(b);
+        h2 = h2.wrapping_mul(FNV_PRIME);
+    }
+    (h1, h2)
+}
+
+/// Compute capacity announcement (Compute domain: `compute.capacity`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeCapacity {
+    /// Available GPU slots (0 = no GPU).
+    pub gpu_slots: u32,
+    /// CPU cores available for scheduling.
+    pub cpu_cores: u32,
+    /// Free memory in megabytes.
+    pub memory_mb: u64,
+    /// Number of builds currently queued.
+    pub build_queue_depth: u32,
+    /// Estimated time to drain build queue (seconds).
+    pub build_queue_eta_secs: u64,
+    /// Inference throughput (tokens per second, 0 = no inference).
+    pub inference_tokens_per_sec: u32,
+}
+
+/// Depot manifest entry for efficient binary distribution gossip (Data domain: `depot.manifest`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepotManifestEntry {
+    /// Primal binary name (e.g. `swarmvine`).
+    pub primal: String,
+    /// Binary version string.
+    pub version: String,
+    /// Target triple (e.g. `x86_64-unknown-linux-musl`).
+    pub target: String,
+    /// BLAKE3 hash of the binary.
+    pub blake3: String,
+    /// Binary size in bytes.
+    pub size_bytes: u64,
+}
+
+/// A gate's depot manifest — all binaries available at that gate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepotManifest {
+    /// Gate that owns this manifest.
+    pub gate: String,
+    /// Timestamp of last depot update (epoch seconds).
+    pub updated_epoch: u64,
+    /// Binaries available.
+    pub entries: Vec<DepotManifestEntry>,
 }
 
 #[cfg(test)]
@@ -667,5 +835,107 @@ mod tests {
         let stats = engine.peer_stats().await;
         assert!(stats.contains_key("gate1"));
         assert_eq!(stats["gate1"].entries_received, 1);
+    }
+
+    #[tokio::test]
+    async fn subscribe_receives_notification() {
+        let engine = test_engine();
+        let mut rx = engine.subscribe();
+        assert_eq!(engine.subscriber_count(), 1);
+
+        engine
+            .inject(
+                GossipTopic::Tower,
+                "capability.advertise:testGate:primal".to_owned(),
+                serde_json::json!({"cap": "test"}),
+            )
+            .await;
+
+        let notification = rx.try_recv().unwrap();
+        assert_eq!(notification.topic, GossipTopic::Tower);
+        assert!(notification.key.starts_with("capability.advertise"));
+        assert_eq!(notification.origin_gate, "testGate");
+    }
+
+    #[tokio::test]
+    async fn subscribe_no_notification_on_duplicate() {
+        let engine = test_engine();
+        let entry = GossipEntry::new(
+            GossipTopic::Data,
+            "cas.have:gate1".to_owned(),
+            serde_json::json!({}),
+            "gate1".to_owned(),
+        );
+
+        engine.ingest(entry.clone(), None).await;
+        let mut rx = engine.subscribe();
+        // Second ingest with same nonce → duplicate, no notification
+        engine.ingest(entry, None).await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn bloom_filter_insert_and_query() {
+        let mut bf = BloomFilter::new(64, 3);
+        bf.insert(b"hash_abc123");
+        bf.insert(b"hash_def456");
+
+        assert!(bf.maybe_contains(b"hash_abc123"));
+        assert!(bf.maybe_contains(b"hash_def456"));
+        assert!(!bf.maybe_contains(b"hash_never_inserted"));
+        assert_eq!(bf.item_count, 2);
+    }
+
+    #[test]
+    fn bloom_filter_empty_returns_false() {
+        let bf = BloomFilter::new(0, 3);
+        assert!(!bf.maybe_contains(b"anything"));
+    }
+
+    #[test]
+    fn bloom_filter_serde_roundtrip() {
+        let mut bf = BloomFilter::new(32, 4);
+        bf.insert(b"test_hash");
+        let json = serde_json::to_string(&bf).unwrap();
+        let decoded: BloomFilter = serde_json::from_str(&json).unwrap();
+        assert!(decoded.maybe_contains(b"test_hash"));
+        assert_eq!(decoded.item_count, 1);
+        assert_eq!(decoded.k, 4);
+    }
+
+    #[test]
+    fn compute_capacity_serde() {
+        let cap = ComputeCapacity {
+            gpu_slots: 4,
+            cpu_cores: 16,
+            memory_mb: 32768,
+            build_queue_depth: 2,
+            build_queue_eta_secs: 300,
+            inference_tokens_per_sec: 1500,
+        };
+        let json = serde_json::to_string(&cap).unwrap();
+        let decoded: ComputeCapacity = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.gpu_slots, 4);
+        assert_eq!(decoded.inference_tokens_per_sec, 1500);
+    }
+
+    #[test]
+    fn depot_manifest_serde() {
+        let manifest = DepotManifest {
+            gate: "sporeGate".to_owned(),
+            updated_epoch: 1_723_200_000,
+            entries: vec![DepotManifestEntry {
+                primal: "swarmvine".to_owned(),
+                version: "0.1.0".to_owned(),
+                target: "x86_64-unknown-linux-musl".to_owned(),
+                blake3: "abc123def456".to_owned(),
+                size_bytes: 2_400_000,
+            }],
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        let decoded: DepotManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.gate, "sporeGate");
+        assert_eq!(decoded.entries.len(), 1);
+        assert_eq!(decoded.entries[0].primal, "swarmvine");
     }
 }

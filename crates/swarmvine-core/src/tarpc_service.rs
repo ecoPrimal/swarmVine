@@ -40,6 +40,10 @@ pub trait SwarmVineService {
 
     /// Get peer statistics (mirrors `gossip.peers`).
     async fn gossip_peers() -> String;
+
+    /// Subscribe snapshot (mirrors `gossip.subscribe`).
+    /// Returns a JSON snapshot of current entries for the given topic.
+    async fn gossip_subscribe(topic: String, key_prefix: Option<String>) -> String;
 }
 
 /// Response type for `health_check` over tarpc.

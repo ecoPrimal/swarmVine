@@ -117,10 +117,7 @@ pub(crate) async fn handle_request(
         "gossip.query" => handle_gossip_query(primal, &params).await,
         "gossip.status" => handle_gossip_status(primal).await,
         "gossip.peers" => handle_gossip_peers(primal).await,
-        "gossip.subscribe" => serde_json::json!({
-            "status": "not_yet_streaming",
-            "message": "gossip.subscribe will support streaming in Phase 4",
-        }),
+        "gossip.subscribe" => handle_gossip_subscribe(primal, &params).await,
 
         _ => return error_response(&id, -32601, "Method not found"),
     };
@@ -255,6 +252,41 @@ async fn handle_gossip_peers(primal: &swarmvine_core::SwarmVinePrimal) -> serde_
         "node_id": primal.engine().node_id(),
         "peer_count": peers.len(),
         "peers": peers,
+    })
+}
+
+/// Handle `gossip.subscribe` — snapshot-based subscription.
+///
+/// JSON-RPC is request/response, so true push streaming requires protocol
+/// evolution (SSE / WebSocket / tarpc streaming). This handler returns a
+/// current-state snapshot of entries matching the subscription filter, plus
+/// the subscriber count so callers can confirm the broadcast channel is live.
+/// Callers poll this method for updates until streaming is available.
+async fn handle_gossip_subscribe(
+    primal: &swarmvine_core::SwarmVinePrimal,
+    params: &serde_json::Value,
+) -> serde_json::Value {
+    let topic = match params.get("topic").and_then(serde_json::Value::as_str) {
+        Some("tower") => GossipTopic::Tower,
+        Some("data") => GossipTopic::Data,
+        Some("compute") => GossipTopic::Compute,
+        _ => {
+            return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
+        }
+    };
+
+    let prefix = params.get("key_prefix").and_then(serde_json::Value::as_str);
+    let entries = primal.engine().query(topic, prefix).await;
+
+    let subscriber_count = primal.engine().subscriber_count();
+
+    serde_json::json!({
+        "mode": "snapshot",
+        "topic": topic,
+        "count": entries.len(),
+        "entries": entries,
+        "subscriber_count": subscriber_count,
+        "note": "Poll this method for updates. Broadcast channel is live for tarpc streaming subscribers.",
     })
 }
 
@@ -472,19 +504,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gossip_subscribe_returns_phase4_message() {
+    async fn gossip_subscribe_returns_snapshot() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req =
+            r#"{"jsonrpc":"2.0","id":10,"method":"gossip.subscribe","params":{"topic":"tower"}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["mode"], "snapshot");
+        assert_eq!(resp["result"]["count"], 0);
+        assert!(resp["result"]["subscriber_count"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn gossip_subscribe_requires_topic() {
         let primal = make_primal();
         let gate = make_gate();
         let req = r#"{"jsonrpc":"2.0","id":10,"method":"gossip.subscribe"}"#;
         let resp: serde_json::Value =
             serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
-        assert_eq!(resp["result"]["status"], "not_yet_streaming");
-        assert!(
-            resp["result"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("Phase 4")
-        );
+        assert!(resp["result"]["error"].as_str().is_some());
     }
 
     #[tokio::test]

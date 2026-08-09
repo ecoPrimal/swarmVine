@@ -208,6 +208,34 @@ impl swarmvine_core::tarpc_service::SwarmVineService for SwarmVineServiceHandler
         let peers = self.primal.engine().peer_stats().await;
         serde_json::json!({"peers": peers, "node_id": self.primal.engine().node_id()}).to_string()
     }
+
+    async fn gossip_subscribe(
+        self,
+        _: tarpc::context::Context,
+        topic: String,
+        key_prefix: Option<String>,
+    ) -> String {
+        use swarmvine_core::GossipTopic;
+        let topic = match topic.as_str() {
+            "tower" => GossipTopic::Tower,
+            "data" => GossipTopic::Data,
+            "compute" => GossipTopic::Compute,
+            _ => return serde_json::json!({"error": "invalid topic"}).to_string(),
+        };
+        let entries = self
+            .primal
+            .engine()
+            .query(topic, key_prefix.as_deref())
+            .await;
+        let subs = self.primal.engine().subscriber_count();
+        serde_json::json!({
+            "mode": "snapshot",
+            "count": entries.len(),
+            "entries": entries,
+            "subscriber_count": subs,
+        })
+        .to_string()
+    }
 }
 
 #[cfg(test)]

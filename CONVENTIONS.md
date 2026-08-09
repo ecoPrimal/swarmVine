@@ -9,7 +9,7 @@ This primal follows the ecoPrimals coding conventions (wateringHole standards).
 - **Linting**: Workspace-level `clippy::pedantic` + `clippy::nursery`, `forbid(unsafe_code)`
 - **Docs**: `warn(missing_docs)` — all public items documented, 0 doc warnings
 - **Max file size**: 1000 LOC (largest: `dispatch.rs` at 682)
-- **Test coverage**: 82% line (124 tests, target 90%+)
+- **Test coverage**: 82% line (132 tests, target 90%+)
 - **IPC**: JSON-RPC 2.0 (`domain.verb` naming) + tarpc binary (G64 dual-protocol)
 - **Transport signals**: `swarmvine_core::ribocipher` — centralized constants, no raw magic bytes
 - **Environment keys**: `swarmvine_core::env_keys` — all env var reads via named constants

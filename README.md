@@ -10,7 +10,7 @@
 ## Quick Start
 
 ```bash
-cargo test --workspace          # 124 tests, <1s
+cargo test --workspace          # 132 tests, <1s
 cargo build --release           # LTO + strip → ~2.4 MB
 ./target/release/swarmvine      # local dev — production binary from plasmidBin
 ```
@@ -46,7 +46,7 @@ swarmVine/
 | `gossip.spread` | Receive gossip entries from mesh peers |
 | `gossip.inject` | Inject a locally-originated gossip entry |
 | `gossip.query` | Query gossip table by topic and key prefix |
-| `gossip.subscribe` | Subscribe to topic changes (Phase 4: streaming) |
+| `gossip.subscribe` | Subscribe to topic changes (snapshot + broadcast channel) |
 | `gossip.status` | Current gossip table statistics |
 | `gossip.peers` | Per-peer exchange statistics |
 
@@ -105,7 +105,7 @@ sourdough scaffold systemd swarmVine --role gate
 | `cargo fmt --check` | Enforced |
 | `cargo clippy -D warnings` (pedantic + nursery) | Enforced |
 | `cargo deny check` | Enforced |
-| `cargo test --workspace` | 124 tests |
+| `cargo test --workspace` | 132 tests |
 | `#![forbid(unsafe_code)]` | Enforced |
 | `warn(missing_docs)` | Enforced |
 

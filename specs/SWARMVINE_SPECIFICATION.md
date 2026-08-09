@@ -12,7 +12,7 @@
 
 | Field | Value |
 |-------|-------|
-| Phase | 1–3 (Core + Cross-gate + skunkBat integration) |
+| Phase | 1–4 (Core + Cross-gate + skunkBat + Domain intelligence) |
 | Domain | Epidemic gossip propagation across mesh |
 | Position | skunkBat's companion — vine spreads, bat validates |
 | Layers | Tower (capabilities), Data (CAS/braids), Compute (resources/tasks) |
@@ -168,12 +168,13 @@ methods = [
 - Graceful degradation when skunkBat unreachable (default allow)
 - riboCipher framing on vine-bat UDS communication
 
-### Phase 4 (NEXT): Domain-specific intelligence + streaming
-- `gossip.subscribe` streaming (currently returns honest Phase 4 status)
-- Bloom filters for CAS `have` sets
-- Depot manifest diffing for efficient binary distribution
-- Compute scheduling hints for biomeOS graph execution
-- songBird gossip delegation (`mesh.capabilities_announce` → swarmVine tower domain)
+### Phase 4 (IN PROGRESS): Domain-specific intelligence + streaming
+- `gossip.subscribe` implemented — broadcast channel for live notifications, snapshot-based polling for JSON-RPC callers
+- `BloomFilter` type for compact CAS `have` set membership (FNV-1a double-hash, serde-friendly)
+- `ComputeCapacity` type for compute scheduling hints (GPU/CPU/memory/queue/inference)
+- `DepotManifest` + `DepotManifestEntry` types for efficient binary distribution gossip
+- **Remaining**: songBird gossip delegation (`mesh.capabilities_announce` → swarmVine tower domain)
+- **Remaining**: tarpc streaming (true push via channel, awaiting tarpc streaming support)
 
 ---
 

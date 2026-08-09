@@ -21,7 +21,10 @@ pub mod tarpc_service;
 pub mod transport;
 
 pub use error::{PrimalError, PrimalResult};
-pub use gossip::{GossipEngine, GossipEntry, GossipStats, GossipTopic, IngestResult, PeerStats};
+pub use gossip::{
+    BloomFilter, ComputeCapacity, DepotManifest, DepotManifestEntry, GossipEngine, GossipEntry,
+    GossipNotification, GossipStats, GossipTopic, IngestResult, PeerStats,
+};
 pub use health::{HealthReport, HealthStatus, PrimalHealth};
 pub use lifecycle::{PrimalLifecycle, PrimalState};
 
