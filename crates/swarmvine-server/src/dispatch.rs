@@ -527,6 +527,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gossip_subscribe_returns_entries_after_inject() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let inject_req = r#"{"jsonrpc":"2.0","id":1,"method":"gossip.inject","params":{"topic":"compute","key":"compute.capacity:testGate","payload":{"gpu_slots":4}}}"#;
+        let _: serde_json::Value =
+            serde_json::from_str(&handle_request(inject_req, &primal, &gate).await).unwrap();
+
+        let sub_req =
+            r#"{"jsonrpc":"2.0","id":2,"method":"gossip.subscribe","params":{"topic":"compute"}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(sub_req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["mode"], "snapshot");
+        assert_eq!(resp["result"]["count"], 1);
+    }
+
+    #[tokio::test]
     async fn primal_announce_returns_expected_data() {
         let primal = make_primal();
         let gate = make_gate();

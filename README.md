@@ -3,14 +3,14 @@
 **Status**: Active — Primal #16
 **License**: AGPL-3.0-or-later (scyBorg Provenance Trio)
 **Purpose**: Epidemic gossip engine for capability, data, and compute propagation across the Tower Atomic mesh
-**Wave**: 157e DEEP DEBT CLEANUP
+**Wave**: 157f REFACTOR + COVERAGE
 
 ---
 
 ## Quick Start
 
 ```bash
-cargo test --workspace          # 132 tests, <1s
+cargo test --workspace          # 134 tests, <1s
 cargo build --release           # LTO + strip → ~2.4 MB
 ./target/release/swarmvine      # local dev — production binary from plasmidBin
 ```
@@ -105,7 +105,7 @@ sourdough scaffold systemd swarmVine --role gate
 | `cargo fmt --check` | Enforced |
 | `cargo clippy -D warnings` (pedantic + nursery) | Enforced |
 | `cargo deny check` | Enforced |
-| `cargo test --workspace` | 132 tests |
+| `cargo test --workspace` | 134 tests |
 | `#![forbid(unsafe_code)]` | Enforced |
 | `warn(missing_docs)` | Enforced |
 

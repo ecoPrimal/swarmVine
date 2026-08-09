@@ -8,8 +8,9 @@ This primal follows the ecoPrimals coding conventions (wateringHole standards).
 - **License**: AGPL-3.0-or-later (scyBorg triple license — `LICENSE` at root)
 - **Linting**: Workspace-level `clippy::pedantic` + `clippy::nursery`, `forbid(unsafe_code)`
 - **Docs**: `warn(missing_docs)` — all public items documented, 0 doc warnings
-- **Max file size**: 1000 LOC (largest: `dispatch.rs` at 682)
-- **Test coverage**: 82% line (132 tests, target 90%+)
+- **Max file size**: 1000 LOC (largest: `gossip.rs` at 755, `dispatch.rs` at 737)
+- **Test coverage**: 82% line (134 tests, target 90%+)
+- **Domain types**: `domain_types.rs` — BloomFilter, ComputeCapacity, DepotManifest extracted from gossip engine
 - **IPC**: JSON-RPC 2.0 (`domain.verb` naming) + tarpc binary (G64 dual-protocol)
 - **Transport signals**: `swarmvine_core::ribocipher` — centralized constants, no raw magic bytes
 - **Environment keys**: `swarmvine_core::env_keys` — all env var reads via named constants

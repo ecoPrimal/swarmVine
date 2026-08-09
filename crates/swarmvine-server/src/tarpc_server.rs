@@ -201,7 +201,7 @@ impl swarmvine_core::tarpc_service::SwarmVineService for SwarmVineServiceHandler
 
     async fn gossip_status(self, _: tarpc::context::Context) -> String {
         let stats = self.primal.engine().stats().await;
-        serde_json::to_string(&stats).unwrap_or_default()
+        serde_json::json!(stats).to_string()
     }
 
     async fn gossip_peers(self, _: tarpc::context::Context) -> String {
@@ -408,5 +408,31 @@ mod tests {
         .await;
         let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(parsed["error"], "invalid topic");
+    }
+
+    #[tokio::test]
+    async fn handler_gossip_subscribe_returns_snapshot() {
+        use swarmvine_core::tarpc_service::SwarmVineService;
+        let handler = running_handler().await;
+
+        SwarmVineService::gossip_inject(
+            handler.clone(),
+            tarpc::context::current(),
+            "data".to_owned(),
+            "cas.have:testGate".to_owned(),
+            "{}".to_owned(),
+        )
+        .await;
+
+        let resp = SwarmVineService::gossip_subscribe(
+            handler,
+            tarpc::context::current(),
+            "data".to_owned(),
+            None,
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(parsed["mode"], "snapshot");
+        assert_eq!(parsed["count"], 1);
     }
 }

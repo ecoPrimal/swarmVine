@@ -7,6 +7,7 @@
 //! This primal discovers other primals at runtime via JSON-RPC 2.0 IPC.
 //! High-performance intra-gate callers use the tarpc service (G64 cephalization).
 
+pub mod domain_types;
 pub mod env_keys;
 pub mod error;
 pub mod gossip;
@@ -20,10 +21,11 @@ pub mod ribocipher;
 pub mod tarpc_service;
 pub mod transport;
 
+pub use domain_types::{BloomFilter, ComputeCapacity, DepotManifest, DepotManifestEntry};
 pub use error::{PrimalError, PrimalResult};
 pub use gossip::{
-    BloomFilter, ComputeCapacity, DepotManifest, DepotManifestEntry, GossipEngine, GossipEntry,
-    GossipNotification, GossipStats, GossipTopic, IngestResult, PeerStats,
+    GossipEngine, GossipEntry, GossipNotification, GossipStats, GossipTopic, IngestResult,
+    PeerStats,
 };
 pub use health::{HealthReport, HealthStatus, PrimalHealth};
 pub use lifecycle::{PrimalLifecycle, PrimalState};
