@@ -282,19 +282,24 @@ impl GossipEngine {
             return IngestResult::Duplicate;
         }
 
-        // Record nonce
+        // Record nonce and evict oldest if over capacity.
+        // Both locks are needed: set for O(1) contains, order for FIFO eviction.
+        let evict_nonce = {
+            let mut nonce_order = self.nonce_order.write().await;
+            nonce_order.push_back(entry.nonce.clone());
+            if nonce_order.len() > MAX_NONCE_HISTORY {
+                nonce_order.pop_front()
+            } else {
+                None
+            }
+        };
         {
             let mut nonce_set = self.nonce_set.write().await;
-            let mut nonce_order = self.nonce_order.write().await;
             nonce_set.insert(entry.nonce.clone());
-            nonce_order.push_back(entry.nonce.clone());
-            while nonce_order.len() > MAX_NONCE_HISTORY {
-                if let Some(old) = nonce_order.pop_front() {
-                    nonce_set.remove(&old);
-                }
+            if let Some(old) = evict_nonce {
+                nonce_set.remove(&old);
             }
             drop(nonce_set);
-            drop(nonce_order);
         }
 
         // Queue for forwarding (if from a peer and has hops remaining)
@@ -395,26 +400,14 @@ impl GossipEngine {
     pub async fn stats(&self) -> GossipStats {
         let (tower_entries, data_entries, compute_entries) = {
             let store = self.entries.read().await;
-            let stats = (
+            (
                 store.get(&GossipTopic::Tower).map_or(0, HashMap::len),
                 store.get(&GossipTopic::Data).map_or(0, HashMap::len),
                 store.get(&GossipTopic::Compute).map_or(0, HashMap::len),
-            );
-            drop(store);
-            stats
+            )
         };
-        let nonce_history_size = {
-            let nonces = self.nonce_set.read().await;
-            let size = nonces.len();
-            drop(nonces);
-            size
-        };
-        let peer_count = {
-            let peers = self.peer_stats.read().await;
-            let count = peers.len();
-            drop(peers);
-            count
-        };
+        let nonce_history_size = self.nonce_set.read().await.len();
+        let peer_count = self.peer_stats.read().await.len();
 
         GossipStats {
             tower_entries,
@@ -445,18 +438,18 @@ impl GossipEngine {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let mut stats = self.peer_stats.write().await;
-        let entry = stats.entry(peer.to_owned()).or_default();
+        let mut guard = self.peer_stats.write().await;
+        let entry = guard.entry(peer.to_owned()).or_default();
         entry.entries_received += 1;
         entry.last_exchange_epoch = now;
-        drop(stats);
+        drop(guard);
     }
 
     async fn record_rejection(&self, peer: &str) {
-        let mut stats = self.peer_stats.write().await;
-        let entry = stats.entry(peer.to_owned()).or_default();
+        let mut guard = self.peer_stats.write().await;
+        let entry = guard.entry(peer.to_owned()).or_default();
         entry.entries_rejected += 1;
-        drop(stats);
+        drop(guard);
     }
 
     /// Record that we sent entries to a peer.
@@ -465,11 +458,11 @@ impl GossipEngine {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let mut stats = self.peer_stats.write().await;
-        let entry = stats.entry(peer.to_owned()).or_default();
+        let mut guard = self.peer_stats.write().await;
+        let entry = guard.entry(peer.to_owned()).or_default();
         entry.entries_sent += count;
         entry.last_exchange_epoch = now;
-        drop(stats);
+        drop(guard);
     }
 }
 

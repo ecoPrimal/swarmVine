@@ -5,8 +5,12 @@ use swarmvine_core::ribocipher;
 use swarmvine_core::{GossipEntry, GossipTopic, IngestResult, PrimalHealth};
 
 fn skunkbat_sock_path() -> String {
-    std::env::var(swarmvine_core::env_keys::SKUNKBAT_SOCKET)
-        .unwrap_or_else(|_| "/tmp/biomeos/skunkbat.sock".to_owned())
+    std::env::var(swarmvine_core::env_keys::SKUNKBAT_SOCKET).unwrap_or_else(|_| {
+        swarmvine_core::platform_paths::runtime_socket_dir()
+            .join("skunkbat.sock")
+            .to_string_lossy()
+            .into_owned()
+    })
 }
 
 /// Whether the vine-bat pre-accept hook is enabled. Disabled in test builds
@@ -300,12 +304,11 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
 
     let (mut rd, mut wr) = tokio::io::split(stream);
 
+    let Ok(request_str) = serde_json::to_string(&request) else {
+        return true;
+    };
     let mut frame = ribocipher::CLEAR_JSONRPC.to_vec();
-    frame.extend_from_slice(
-        serde_json::to_string(&request)
-            .unwrap_or_default()
-            .as_bytes(),
-    );
+    frame.extend_from_slice(request_str.as_bytes());
     frame.push(b'\n');
 
     if wr.write_all(&frame).await.is_err() {

@@ -3,7 +3,7 @@
 **Version**: 0.1.0  
 **Date**: August 09, 2026  
 **Status**: ACTIVE — vertebrate evolution complete, self-audited  
-**Wave**: 157d DEPOT UNIFIED + WINDOWS PORT  
+**Wave**: 157e DEEP DEBT CLEANUP  
 **Tower Layer**: Cross-layer (Tower + Data + Compute)
 
 ---

@@ -26,7 +26,6 @@ clap = { workspace = true }
 tarpc = { workspace = true }
 tokio-serde = { workspace = true }
 futures = { workspace = true }
-hostname = { workspace = true }
 
 [dev-dependencies]
 temp-env = "0.3"

@@ -25,6 +25,21 @@ pub use gossip::{GossipEngine, GossipEntry, GossipStats, GossipTopic, IngestResu
 pub use health::{HealthReport, HealthStatus, PrimalHealth};
 pub use lifecycle::{PrimalLifecycle, PrimalState};
 
+/// Resolve the gate node identity from environment or system hostname.
+///
+/// Tiered: `GATE_ID` env → `HOSTNAME` env → OS hostname → `"unknown"`.
+#[must_use]
+pub fn resolve_node_id() -> String {
+    std::env::var("GATE_ID")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| {
+            hostname::get()
+                .ok()
+                .and_then(|h| h.into_string().ok())
+                .unwrap_or_else(|| "unknown".to_owned())
+        })
+}
+
 /// The swarmVine primal.
 pub struct SwarmVinePrimal {
     state: PrimalState,
@@ -44,15 +59,7 @@ impl SwarmVinePrimal {
     /// Create a new primal instance (derives node ID from hostname).
     #[must_use]
     pub fn new() -> Self {
-        let node_id = std::env::var("GATE_ID")
-            .or_else(|_| std::env::var("HOSTNAME"))
-            .unwrap_or_else(|_| {
-                hostname::get()
-                    .ok()
-                    .and_then(|h| h.into_string().ok())
-                    .unwrap_or_else(|| "unknown".to_owned())
-            });
-        Self::with_node_id(node_id)
+        Self::with_node_id(resolve_node_id())
     }
 
     /// Access the gossip engine.

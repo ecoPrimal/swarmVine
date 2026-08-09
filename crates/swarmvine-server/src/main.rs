@@ -74,13 +74,7 @@ async fn main() -> Result<()> {
     let node_id = cli
         .gate_id
         .clone()
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| {
-            hostname::get()
-                .ok()
-                .and_then(|h| h.into_string().ok())
-                .unwrap_or_else(|| "unknown".to_owned())
-        });
+        .unwrap_or_else(swarmvine_core::resolve_node_id);
 
     let mut primal = swarmvine_core::SwarmVinePrimal::with_node_id(node_id.clone());
     swarmvine_core::PrimalLifecycle::start(&mut primal)

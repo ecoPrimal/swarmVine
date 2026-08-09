@@ -129,12 +129,13 @@ async fn discover_peers() -> Vec<String> {
     peers
 }
 
-/// Query local songBird for mesh peers via UDS.
+/// Query local songBird for mesh peers via transport abstraction.
 ///
 /// Returns `host:port` addresses for remote swarmVine instances.
-#[cfg(unix)]
+/// Uses `connect_transport` so the same code compiles on all platforms
+/// (UDS on Unix, `Unsupported` error on Windows → returns `None`).
 async fn query_songbird_peers() -> Option<Vec<String>> {
-    let songbird_socket = crate::announce::discover_songbird_socket()?;
+    let songbird_socket = discover_songbird_socket()?;
 
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
@@ -143,9 +144,12 @@ async fn query_songbird_peers() -> Option<Vec<String>> {
         "id": 1,
     });
 
+    let endpoint = swarmvine_core::transport::TransportEndpoint::Uds {
+        path: songbird_socket.to_string_lossy().into_owned(),
+    };
     let stream = match tokio::time::timeout(
         CONNECT_TIMEOUT,
-        tokio::net::UnixStream::connect(&songbird_socket),
+        swarmvine_core::transport::connect_transport(&endpoint),
     )
     .await
     {
@@ -160,15 +164,14 @@ async fn query_songbird_peers() -> Option<Vec<String>> {
         }
     };
 
-    let mut reader = BufReader::new(stream);
-    let writer = reader.get_mut();
+    let (rd, mut wr) = tokio::io::split(stream);
+    let mut reader = BufReader::new(rd);
 
-    // Send riboCipher clear signal + request
-    if writer.write_all(&ribocipher::CLEAR_JSONRPC).await.is_err() {
+    if wr.write_all(&ribocipher::CLEAR_JSONRPC).await.is_err() {
         return None;
     }
     let msg = format!("{payload}\n");
-    if writer.write_all(msg.as_bytes()).await.is_err() {
+    if wr.write_all(msg.as_bytes()).await.is_err() {
         return None;
     }
 
@@ -206,17 +209,17 @@ async fn query_songbird_peers() -> Option<Vec<String>> {
     if addrs.is_empty() { None } else { Some(addrs) }
 }
 
-#[cfg(not(unix))]
-async fn query_songbird_peers() -> Option<Vec<String>> {
-    None
+/// Delegate to announce module's discovery logic.
+fn discover_songbird_socket() -> Option<std::path::PathBuf> {
+    crate::announce::discover_songbird_socket()
 }
 
 /// Extract a swarmVine gossip address from a songBird peer entry.
 ///
 /// Looks for `addr`, `address`, or `endpoint` fields containing an IP,
-/// then appends the default gossip port.
+/// then appends the default gossip port. Filters out loopback addresses
+/// (including bracketed IPv6 `[::1]`).
 fn extract_peer_address(peer: &serde_json::Value, port: u16) -> Option<String> {
-    // Try direct addr field first
     let addr_str = peer
         .get("addr")
         .or_else(|| peer.get("address"))
@@ -224,21 +227,18 @@ fn extract_peer_address(peer: &serde_json::Value, port: u16) -> Option<String> {
         .and_then(|v| v.as_str());
 
     if let Some(addr) = addr_str {
-        // If it already has a port, extract IP and use gossip port
-        let ip = addr.rfind(':').map_or(addr, |colon_pos| &addr[..colon_pos]);
-        // Skip localhost (that's us)
-        if ip == "127.0.0.1" || ip == "::1" || ip == "localhost" {
+        let ip = strip_port(addr);
+        if ip.is_empty() || is_loopback(ip) {
             return None;
         }
         return Some(format!("{ip}:{port}"));
     }
 
-    // Try extracting from nested path info
     if let Some(paths) = peer.get("paths").and_then(|p| p.as_array()) {
         for path in paths {
             if let Some(ep) = path.get("endpoint").and_then(|e| e.as_str()) {
-                let ip = ep.rfind(':').map_or(ep, |colon_pos| &ep[..colon_pos]);
-                if ip != "127.0.0.1" && ip != "::1" && ip != "localhost" {
+                let ip = strip_port(ep);
+                if !ip.is_empty() && !is_loopback(ip) {
                     return Some(format!("{ip}:{port}"));
                 }
             }
@@ -246,6 +246,19 @@ fn extract_peer_address(peer: &serde_json::Value, port: u16) -> Option<String> {
     }
 
     None
+}
+
+/// Strip trailing `:port` from an address string, handling bracketed IPv6.
+fn strip_port(addr: &str) -> &str {
+    addr.rfind(']').map_or_else(
+        || addr.rfind(':').map_or(addr, |pos| &addr[..pos]),
+        |bracket_end| &addr[..=bracket_end],
+    )
+}
+
+/// Whether the address is a loopback (including bracketed IPv6).
+fn is_loopback(ip: &str) -> bool {
+    matches!(ip, "127.0.0.1" | "::1" | "[::1]" | "localhost")
 }
 
 /// Send a gossip batch to a remote swarmVine peer via TCP.
@@ -374,13 +387,9 @@ mod tests {
     }
 
     #[test]
-    fn extract_peer_address_bracketed_ipv6_loopback_not_filtered() {
-        // Bracketed loopback bypasses the plain `::1` check (rfind split leaves brackets).
+    fn extract_peer_address_bracketed_ipv6_loopback_filtered() {
         let peer = serde_json::json!({"addr": "[::1]:7700"});
-        assert_eq!(
-            extract_peer_address(&peer, 7800),
-            Some("[::1]:7800".to_owned())
-        );
+        assert_eq!(extract_peer_address(&peer, 7800), None);
     }
 
     #[test]
@@ -392,8 +401,7 @@ mod tests {
     #[test]
     fn extract_peer_address_malformed_empty_string() {
         let peer = serde_json::json!({"addr": ""});
-        let addr = extract_peer_address(&peer, 7800);
-        assert_eq!(addr, Some(":7800".to_owned()));
+        assert_eq!(extract_peer_address(&peer, 7800), None);
     }
 
     #[test]

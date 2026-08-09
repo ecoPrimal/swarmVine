@@ -81,6 +81,15 @@ impl PrimalDirs {
     }
 }
 
+/// Resolve the runtime socket directory for the ecosystem.
+///
+/// Used for discovering peer sockets without hardcoding `/tmp/biomeos/`.
+/// Respects `BIOMEOS_RUNTIME_DIR` override, then platform-specific base.
+#[must_use]
+pub fn runtime_socket_dir() -> PathBuf {
+    resolve_runtime()
+}
+
 fn resolve_config(primal_name: &str) -> PathBuf {
     if let Ok(dir) = std::env::var(env_overrides::CONFIG_DIR) {
         return PathBuf::from(dir).join(primal_name);

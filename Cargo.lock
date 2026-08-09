@@ -763,7 +763,6 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
- "hostname",
  "serde",
  "serde_json",
  "swarmvine-core",

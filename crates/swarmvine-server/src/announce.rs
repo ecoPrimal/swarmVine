@@ -90,8 +90,9 @@ fn discover_neural_api_socket(family: &str) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    // Tier 3: /tmp fallback
-    let p = PathBuf::from(format!("/tmp/biomeos/neural-api-{family}.sock"));
+    // Tier 3: platform runtime fallback
+    let p = swarmvine_core::platform_paths::runtime_socket_dir()
+        .join(format!("neural-api-{family}.sock"));
     if p.exists() {
         return Some(p);
     }
@@ -150,8 +151,9 @@ pub(crate) async fn register_with_songbird(primal_name: &str, endpoint_json: &se
     }
 }
 
-/// Discover songbird socket via standard biomeOS resolution.
-#[cfg(unix)]
+/// Discover songbird socket via tiered biomeOS resolution.
+///
+/// Platform-agnostic: on non-Unix, socket files won't exist so this returns `None`.
 pub(crate) fn discover_songbird_socket() -> Option<PathBuf> {
     if let Ok(path) = std::env::var(swarmvine_core::env_keys::SONGBIRD_SOCKET) {
         let p = PathBuf::from(&path);
@@ -165,7 +167,7 @@ pub(crate) fn discover_songbird_socket() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let p = PathBuf::from("/tmp/biomeos/songbird.sock");
+    let p = swarmvine_core::platform_paths::runtime_socket_dir().join("songbird.sock");
     if p.exists() {
         return Some(p);
     }
@@ -208,7 +210,6 @@ mod tests {
         assert_eq!(signal_tiers(), &["tower", "node", "meta"]);
     }
 
-    #[cfg(unix)]
     #[test]
     fn discover_songbird_socket_none_when_missing() {
         let empty_runtime =
@@ -226,16 +227,15 @@ mod tests {
                     swarmvine_core::env_keys::XDG_RUNTIME_DIR,
                     Some(runtime_dir.as_str()),
                 ),
+                (
+                    swarmvine_core::platform_paths::env_overrides::RUNTIME_DIR,
+                    Some(empty_runtime.to_str().unwrap()),
+                ),
             ],
             discover_songbird_socket,
         );
 
         let _ = std::fs::remove_dir_all(&empty_runtime);
-
-        if std::path::Path::new("/tmp/biomeos/songbird.sock").exists() {
-            assert!(result.is_some());
-        } else {
-            assert!(result.is_none());
-        }
+        assert!(result.is_none());
     }
 }

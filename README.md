@@ -3,7 +3,7 @@
 **Status**: Active — Primal #16
 **License**: AGPL-3.0-or-later (scyBorg Provenance Trio)
 **Purpose**: Epidemic gossip engine for capability, data, and compute propagation across the Tower Atomic mesh
-**Wave**: 157a VERTEBRATE EVOLUTION
+**Wave**: 157e DEEP DEBT CLEANUP
 
 ---
 
@@ -67,7 +67,8 @@ Remote swarmVine instances connect here for `gossip.spread` exchange using riboC
 | Windows (gnu) | TCP fallback | Not yet (graceful `Unsupported`) | TCP |
 
 All UDS call sites use `swarmvine_core::transport` abstraction or `#[cfg(unix)]` gating.
-Windows compilation unblocked (Wave 157d).
+Windows compilation unblocked (Wave 157d). Peer discovery and songBird query also
+use transport abstraction (Wave 157e).
 
 ## Gossip Domains
 
@@ -78,6 +79,8 @@ Windows compilation unblocked (Wave 157d).
 | **compute** | Resource | `compute.capacity`, `build.queue`, `inference.bandwidth` |
 
 ## Composition
+
+All peer primals discovered at runtime — zero hardcoded primal names or paths in production code.
 
 - **skunkBat** — vine-bat loop: `gossip.spread` → `metadata.analyze` → accept/reject
 - **songBird** — peer discovery via `mesh.peers`, gossip delegation (tower domain)
