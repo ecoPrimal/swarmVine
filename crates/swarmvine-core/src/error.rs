@@ -88,3 +88,67 @@ impl PrimalError {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PrimalError;
+    use std::io;
+
+    #[test]
+    fn constructors_create_expected_variants() {
+        let config = PrimalError::config("bad config");
+        assert!(matches!(config, PrimalError::Config(_)));
+
+        let lifecycle = PrimalError::lifecycle("start failed");
+        assert!(matches!(lifecycle, PrimalError::Lifecycle(_)));
+
+        let dependency = PrimalError::dependency("songBird", "unreachable");
+        assert!(matches!(dependency, PrimalError::Dependency { .. }));
+    }
+
+    #[test]
+    fn is_retryable_true_for_transient_errors() {
+        assert!(PrimalError::Network("conn reset".to_owned()).is_retryable());
+        assert!(PrimalError::Timeout("deadline".to_owned()).is_retryable());
+        assert!(PrimalError::dependency("upstream", "503").is_retryable());
+    }
+
+    #[test]
+    fn is_retryable_false_for_permanent_errors() {
+        assert!(!PrimalError::config("x").is_retryable());
+        assert!(!PrimalError::lifecycle("x").is_retryable());
+        assert!(!PrimalError::Health("x".to_owned()).is_retryable());
+        assert!(!PrimalError::Serialization("x".to_owned()).is_retryable());
+        assert!(!PrimalError::NotFound("x".to_owned()).is_retryable());
+        assert!(!PrimalError::InvalidInput("x".to_owned()).is_retryable());
+        assert!(!PrimalError::Internal("x".to_owned()).is_retryable());
+    }
+
+    #[test]
+    fn display_formats_messages() {
+        assert_eq!(
+            PrimalError::config("missing key").to_string(),
+            "configuration error: missing key"
+        );
+        assert_eq!(
+            PrimalError::lifecycle("already running").to_string(),
+            "lifecycle error: already running"
+        );
+        assert_eq!(
+            PrimalError::dependency("neural-api", "timeout").to_string(),
+            "dependency error: neural-api: timeout"
+        );
+        assert_eq!(
+            PrimalError::Health("probe failed".to_owned()).to_string(),
+            "health error: probe failed"
+        );
+    }
+
+    #[test]
+    fn from_io_error() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "gone");
+        let primal_err: PrimalError = io_err.into();
+        assert!(matches!(primal_err, PrimalError::Io(_)));
+        assert!(primal_err.to_string().contains("gone"));
+    }
+}

@@ -9,14 +9,17 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use swarmvine_core::ribocipher;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, info, warn};
 
-/// riboCipher clear signal for JSON-RPC.
-const RIBO_CLEAR: [u8; 2] = [0xEC, 0x01];
-
-/// Default swarmVine gossip port (peers listen on this for cross-gate traffic).
-const DEFAULT_GOSSIP_PORT: u16 = 7800;
+/// Resolve the gossip port from environment or use the default (7800).
+fn gossip_port() -> u16 {
+    std::env::var(swarmvine_core::env_keys::GOSSIP_PORT)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7800)
+}
 
 /// Connection timeout for peer gossip exchange.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -30,7 +33,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(3);
 /// 1. Drains entries queued for forwarding
 /// 2. Discovers mesh peers (env + songBird)
 /// 3. Sends `gossip.spread` batch to each peer's swarmVine
-pub async fn epidemic_loop(
+pub(crate) async fn epidemic_loop(
     primal: Arc<swarmvine_core::SwarmVinePrimal>,
     interval_secs: u64,
 ) {
@@ -39,17 +42,13 @@ pub async fn epidemic_loop(
     loop {
         interval.tick().await;
 
-        let entries = primal.engine().drain_forward_queue().await;
-        if entries.is_empty() {
+        let peers = discover_peers().await;
+        if peers.is_empty() {
             continue;
         }
 
-        let peers = discover_peers().await;
-        if peers.is_empty() {
-            debug!(
-                queued = entries.len(),
-                "No peers discovered — gossip entries will be re-queued on next inject"
-            );
+        let entries = primal.engine().drain_forward_queue().await;
+        if entries.is_empty() {
             continue;
         }
 
@@ -64,8 +63,8 @@ pub async fn epidemic_loop(
             "id": null,
         });
 
-        let batch_json = match serde_json::to_string(&batch_payload) {
-            Ok(s) => s,
+        let batch_json: Arc<str> = match serde_json::to_string(&batch_payload) {
+            Ok(s) => Arc::from(s),
             Err(e) => {
                 warn!(error = %e, "Failed to serialize gossip batch");
                 continue;
@@ -80,7 +79,7 @@ pub async fn epidemic_loop(
 
         for peer_addr in &peers {
             let addr = peer_addr.clone();
-            let payload = batch_json.clone();
+            let payload = Arc::clone(&batch_json);
             let engine = Arc::clone(&primal);
             tokio::spawn(async move {
                 match spread_to_peer(&addr, &payload).await {
@@ -88,7 +87,7 @@ pub async fn epidemic_loop(
                         debug!(peer = %addr, accepted, "Gossip spread delivered");
                         engine
                             .engine()
-                            .record_send(&addr, accepted as u64)
+                            .record_send(&addr, u64::from(accepted))
                             .await;
                     }
                     Err(e) => {
@@ -104,12 +103,12 @@ pub async fn epidemic_loop(
 ///
 /// Tier 1: `SWARMVINE_PEERS` env — comma-separated `host:port` list.
 /// Tier 2: songBird `mesh.peers` via local UDS — extracts peer IPs and
-///         assumes swarmVine on DEFAULT_GOSSIP_PORT.
+///         assumes swarmVine on the gossip port from `GOSSIP_PORT` (default 7800).
 async fn discover_peers() -> Vec<String> {
     let mut peers = Vec::new();
 
     // Tier 1: explicit peers from environment
-    if let Ok(env_peers) = std::env::var("SWARMVINE_PEERS") {
+    if let Ok(env_peers) = std::env::var(swarmvine_core::env_keys::SWARMVINE_PEERS) {
         for peer in env_peers.split(',') {
             let trimmed = peer.trim();
             if !trimmed.is_empty() {
@@ -135,7 +134,7 @@ async fn discover_peers() -> Vec<String> {
 /// Returns `host:port` addresses for remote swarmVine instances.
 #[cfg(unix)]
 async fn query_songbird_peers() -> Option<Vec<String>> {
-    let songbird_socket = discover_songbird_socket()?;
+    let songbird_socket = crate::announce::discover_songbird_socket()?;
 
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
@@ -165,10 +164,10 @@ async fn query_songbird_peers() -> Option<Vec<String>> {
     let writer = reader.get_mut();
 
     // Send riboCipher clear signal + request
-    if writer.write_all(&RIBO_CLEAR).await.is_err() {
+    if writer.write_all(&ribocipher::CLEAR_JSONRPC).await.is_err() {
         return None;
     }
-    let msg = format!("{}\n", payload);
+    let msg = format!("{payload}\n");
     if writer.write_all(msg.as_bytes()).await.is_err() {
         return None;
     }
@@ -184,30 +183,27 @@ async fn query_songbird_peers() -> Option<Vec<String>> {
 
     // Extract peer IPs from mesh.peers response
     // songBird returns peers as array of objects with node_id, path info, etc.
+    let port = gossip_port();
     let mut addrs = Vec::new();
     if let Some(peers) = result.get("peers").and_then(|p| p.as_array()) {
         for peer in peers {
-            if let Some(addr) = extract_peer_address(peer) {
+            if let Some(addr) = extract_peer_address(peer, port) {
                 addrs.push(addr);
             }
         }
     }
     // Some songBird versions return a flat object keyed by node_id
-    if addrs.is_empty() {
-        if let Some(obj) = result.as_object() {
-            for (_node_id, info) in obj {
-                if let Some(addr) = extract_peer_address(info) {
-                    addrs.push(addr);
-                }
+    if addrs.is_empty()
+        && let Some(obj) = result.as_object()
+    {
+        for (_node_id, info) in obj {
+            if let Some(addr) = extract_peer_address(info, port) {
+                addrs.push(addr);
             }
         }
     }
 
-    if addrs.is_empty() {
-        None
-    } else {
-        Some(addrs)
-    }
+    if addrs.is_empty() { None } else { Some(addrs) }
 }
 
 #[cfg(not(unix))]
@@ -219,7 +215,7 @@ async fn query_songbird_peers() -> Option<Vec<String>> {
 ///
 /// Looks for `addr`, `address`, or `endpoint` fields containing an IP,
 /// then appends the default gossip port.
-fn extract_peer_address(peer: &serde_json::Value) -> Option<String> {
+fn extract_peer_address(peer: &serde_json::Value, port: u16) -> Option<String> {
     // Try direct addr field first
     let addr_str = peer
         .get("addr")
@@ -229,29 +225,21 @@ fn extract_peer_address(peer: &serde_json::Value) -> Option<String> {
 
     if let Some(addr) = addr_str {
         // If it already has a port, extract IP and use gossip port
-        let ip = if let Some(colon_pos) = addr.rfind(':') {
-            &addr[..colon_pos]
-        } else {
-            addr
-        };
+        let ip = addr.rfind(':').map_or(addr, |colon_pos| &addr[..colon_pos]);
         // Skip localhost (that's us)
         if ip == "127.0.0.1" || ip == "::1" || ip == "localhost" {
             return None;
         }
-        return Some(format!("{ip}:{DEFAULT_GOSSIP_PORT}"));
+        return Some(format!("{ip}:{port}"));
     }
 
     // Try extracting from nested path info
     if let Some(paths) = peer.get("paths").and_then(|p| p.as_array()) {
         for path in paths {
             if let Some(ep) = path.get("endpoint").and_then(|e| e.as_str()) {
-                let ip = if let Some(colon_pos) = ep.rfind(':') {
-                    &ep[..colon_pos]
-                } else {
-                    ep
-                };
+                let ip = ep.rfind(':').map_or(ep, |colon_pos| &ep[..colon_pos]);
                 if ip != "127.0.0.1" && ip != "::1" && ip != "localhost" {
-                    return Some(format!("{ip}:{DEFAULT_GOSSIP_PORT}"));
+                    return Some(format!("{ip}:{port}"));
                 }
             }
         }
@@ -260,41 +248,22 @@ fn extract_peer_address(peer: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// Discover songBird socket via standard biomeOS resolution.
-#[cfg(unix)]
-fn discover_songbird_socket() -> Option<std::path::PathBuf> {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        let p = std::path::PathBuf::from(format!("{runtime_dir}/biomeos/songbird.sock"));
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let p = std::path::PathBuf::from("/tmp/biomeos/songbird.sock");
-    if p.exists() {
-        return Some(p);
-    }
-    None
-}
-
 /// Send a gossip batch to a remote swarmVine peer via TCP.
 ///
 /// Uses riboCipher clear signal (0xEC 0x01) + JSON-RPC line protocol.
 /// Returns the number of entries accepted by the remote peer.
 async fn spread_to_peer(addr: &str, payload: &str) -> Result<u32, String> {
-    let stream = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        tokio::net::TcpStream::connect(addr),
-    )
-    .await
-    .map_err(|_| format!("Timeout connecting to {addr}"))?
-    .map_err(|e| format!("TCP connect to {addr}: {e}"))?;
+    let stream = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
+        .await
+        .map_err(|_| format!("Timeout connecting to {addr}"))?
+        .map_err(|e| format!("TCP connect to {addr}: {e}"))?;
 
     let mut reader = BufReader::new(stream);
     let writer = reader.get_mut();
 
     // riboCipher clear signal
     writer
-        .write_all(&RIBO_CLEAR)
+        .write_all(&ribocipher::CLEAR_JSONRPC)
         .await
         .map_err(|e| format!("Write signal to {addr}: {e}"))?;
 
@@ -312,16 +281,14 @@ async fn spread_to_peer(addr: &str, payload: &str) -> Result<u32, String> {
     let mut response = String::new();
     match tokio::time::timeout(READ_TIMEOUT, reader.read_line(&mut response)).await {
         Ok(Ok(n)) if n > 0 => {
-            if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&response) {
+            serde_json::from_str::<serde_json::Value>(&response).map_or(Ok(0), |resp| {
                 let accepted = resp
                     .get("result")
                     .and_then(|r| r.get("accepted"))
-                    .and_then(|a| a.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0);
-                Ok(accepted as u32)
-            } else {
-                Ok(0)
-            }
+                Ok(u32::try_from(accepted).unwrap_or(0))
+            })
         }
         _ => Ok(0),
     }
@@ -334,21 +301,21 @@ mod tests {
     #[test]
     fn extract_peer_address_from_addr_field() {
         let peer = serde_json::json!({"addr": "192.168.4.2:7700"});
-        let addr = extract_peer_address(&peer);
-        assert_eq!(addr, Some(format!("192.168.4.2:{DEFAULT_GOSSIP_PORT}")));
+        let addr = extract_peer_address(&peer, 7800);
+        assert_eq!(addr, Some("192.168.4.2:7800".to_owned()));
     }
 
     #[test]
     fn extract_peer_address_from_endpoint_field() {
         let peer = serde_json::json!({"endpoint": "10.13.37.11:7700"});
-        let addr = extract_peer_address(&peer);
-        assert_eq!(addr, Some(format!("10.13.37.11:{DEFAULT_GOSSIP_PORT}")));
+        let addr = extract_peer_address(&peer, 7800);
+        assert_eq!(addr, Some("10.13.37.11:7800".to_owned()));
     }
 
     #[test]
     fn skip_localhost_address() {
         let peer = serde_json::json!({"addr": "127.0.0.1:7700"});
-        assert_eq!(extract_peer_address(&peer), None);
+        assert_eq!(extract_peer_address(&peer, 7800), None);
     }
 
     #[test]
@@ -359,14 +326,14 @@ mod tests {
                 {"endpoint": "192.168.4.149:7700", "type": "lan"}
             ]
         });
-        let addr = extract_peer_address(&peer);
-        assert_eq!(addr, Some(format!("192.168.4.149:{DEFAULT_GOSSIP_PORT}")));
+        let addr = extract_peer_address(&peer, 7800);
+        assert_eq!(addr, Some("192.168.4.149:7800".to_owned()));
     }
 
     #[test]
     fn no_address_returns_none() {
         let peer = serde_json::json!({"node_id": "westGate"});
-        assert_eq!(extract_peer_address(&peer), None);
+        assert_eq!(extract_peer_address(&peer, 7800), None);
     }
 
     #[test]
@@ -382,5 +349,108 @@ mod tests {
         assert!(peers.contains(&"10.13.37.2:7800".to_owned()));
         assert!(peers.contains(&"10.13.37.11:7800".to_owned()));
         assert!(peers.contains(&"192.168.4.2:7800".to_owned()));
+    }
+
+    #[test]
+    fn discover_peers_returns_env_peers() {
+        temp_env::with_var(
+            swarmvine_core::env_keys::SWARMVINE_PEERS,
+            Some("10.0.0.1:7800, 10.0.0.2:7800"),
+            || {
+                let peers = tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(discover_peers());
+                assert!(peers.contains(&"10.0.0.1:7800".to_owned()));
+                assert!(peers.contains(&"10.0.0.2:7800".to_owned()));
+            },
+        );
+    }
+
+    #[test]
+    fn extract_peer_address_ipv6_bracketed() {
+        let peer = serde_json::json!({"addr": "[2001:db8::2]:7700"});
+        let addr = extract_peer_address(&peer, 7800);
+        assert_eq!(addr, Some("[2001:db8::2]:7800".to_owned()));
+    }
+
+    #[test]
+    fn extract_peer_address_bracketed_ipv6_loopback_not_filtered() {
+        // Bracketed loopback bypasses the plain `::1` check (rfind split leaves brackets).
+        let peer = serde_json::json!({"addr": "[::1]:7700"});
+        assert_eq!(
+            extract_peer_address(&peer, 7800),
+            Some("[::1]:7800".to_owned())
+        );
+    }
+
+    #[test]
+    fn extract_peer_address_malformed_non_string_addr() {
+        let peer = serde_json::json!({"addr": 12345});
+        assert_eq!(extract_peer_address(&peer, 7800), None);
+    }
+
+    #[test]
+    fn extract_peer_address_malformed_empty_string() {
+        let peer = serde_json::json!({"addr": ""});
+        let addr = extract_peer_address(&peer, 7800);
+        assert_eq!(addr, Some(":7800".to_owned()));
+    }
+
+    #[test]
+    fn extract_peer_address_from_address_field_ipv6() {
+        let peer = serde_json::json!({"address": "fe80::1:7700"});
+        let addr = extract_peer_address(&peer, 7800);
+        assert_eq!(addr, Some("fe80::1:7800".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn spread_to_peer_sends_and_receives() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut prefix = [0u8; 2];
+            stream.read_exact(&mut prefix).await.unwrap();
+            assert_eq!(prefix, ribocipher::CLEAR_JSONRPC);
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert!(line.contains("test"));
+            let writer = reader.get_mut();
+            writer
+                .write_all(br#"{"jsonrpc":"2.0","result":{"accepted":3},"id":null}"#)
+                .await
+                .unwrap();
+            writer.write_all(b"\n").await.unwrap();
+        });
+
+        let result = spread_to_peer(&format!("127.0.0.1:{port}"), r#"{"test":"payload"}"#).await;
+        server.await.unwrap();
+        assert_eq!(result.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn spread_to_peer_read_timeout_returns_zero() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut prefix = [0u8; 2];
+            stream.read_exact(&mut prefix).await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            // Accept connection and read request but never respond.
+        });
+
+        let result = spread_to_peer(&format!("127.0.0.1:{port}"), r#"{"test":"payload"}"#).await;
+        server.await.unwrap();
+        assert_eq!(result.unwrap(), 0);
     }
 }

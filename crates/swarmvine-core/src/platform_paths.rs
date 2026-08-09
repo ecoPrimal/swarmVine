@@ -126,7 +126,10 @@ fn platform_config_base() -> PathBuf {
 }
 #[cfg(target_os = "windows")]
 fn platform_config_base() -> PathBuf {
-    std::env::var("APPDATA").map_or_else(|_| home_dir().join("AppData").join("Roaming"), PathBuf::from)
+    std::env::var("APPDATA").map_or_else(
+        |_| home_dir().join("AppData").join("Roaming"),
+        PathBuf::from,
+    )
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn platform_config_base() -> PathBuf {
@@ -135,7 +138,8 @@ fn platform_config_base() -> PathBuf {
 
 #[cfg(target_os = "linux")]
 fn platform_data_base() -> PathBuf {
-    std::env::var("XDG_DATA_HOME").map_or_else(|_| home_dir().join(".local").join("share"), PathBuf::from)
+    std::env::var("XDG_DATA_HOME")
+        .map_or_else(|_| home_dir().join(".local").join("share"), PathBuf::from)
 }
 #[cfg(target_os = "macos")]
 fn platform_data_base() -> PathBuf {
@@ -143,11 +147,15 @@ fn platform_data_base() -> PathBuf {
 }
 #[cfg(target_os = "windows")]
 fn platform_data_base() -> PathBuf {
-    std::env::var("APPDATA").map_or_else(|_| home_dir().join("AppData").join("Roaming"), PathBuf::from)
+    std::env::var("APPDATA").map_or_else(
+        |_| home_dir().join("AppData").join("Roaming"),
+        PathBuf::from,
+    )
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn platform_data_base() -> PathBuf {
-    std::env::var("XDG_DATA_HOME").map_or_else(|_| home_dir().join(".local").join("share"), PathBuf::from)
+    std::env::var("XDG_DATA_HOME")
+        .map_or_else(|_| home_dir().join(".local").join("share"), PathBuf::from)
 }
 
 #[cfg(target_os = "linux")]
@@ -183,7 +191,8 @@ fn platform_cache_base() -> PathBuf {
 }
 #[cfg(target_os = "windows")]
 fn platform_cache_base() -> PathBuf {
-    std::env::var("LOCALAPPDATA").map_or_else(|_| home_dir().join("AppData").join("Local"), PathBuf::from)
+    std::env::var("LOCALAPPDATA")
+        .map_or_else(|_| home_dir().join("AppData").join("Local"), PathBuf::from)
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn platform_cache_base() -> PathBuf {
@@ -192,7 +201,8 @@ fn platform_cache_base() -> PathBuf {
 
 #[cfg(target_os = "linux")]
 fn platform_logs_base() -> PathBuf {
-    std::env::var("XDG_STATE_HOME").map_or_else(|_| home_dir().join(".local").join("state"), PathBuf::from)
+    std::env::var("XDG_STATE_HOME")
+        .map_or_else(|_| home_dir().join(".local").join("state"), PathBuf::from)
 }
 #[cfg(target_os = "macos")]
 fn platform_logs_base() -> PathBuf {
@@ -200,15 +210,91 @@ fn platform_logs_base() -> PathBuf {
 }
 #[cfg(target_os = "windows")]
 fn platform_logs_base() -> PathBuf {
-    std::env::var("LOCALAPPDATA").map_or_else(|_| home_dir().join("AppData").join("Local"), PathBuf::from)
+    std::env::var("LOCALAPPDATA")
+        .map_or_else(|_| home_dir().join("AppData").join("Local"), PathBuf::from)
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn platform_logs_base() -> PathBuf {
-    std::env::var("XDG_STATE_HOME").map_or_else(|_| home_dir().join(".local").join("state"), PathBuf::from)
+    std::env::var("XDG_STATE_HOME")
+        .map_or_else(|_| home_dir().join(".local").join("state"), PathBuf::from)
 }
 
 fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_or_else(|_| PathBuf::from("/tmp"), PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PrimalDirs, env_overrides};
+    use std::path::PathBuf;
+
+    #[test]
+    fn resolve_returns_non_empty_paths() {
+        let dirs = PrimalDirs::resolve("swarmVine");
+        assert!(!dirs.config.as_os_str().is_empty());
+        assert!(!dirs.data.as_os_str().is_empty());
+        assert!(!dirs.runtime.as_os_str().is_empty());
+        assert!(!dirs.cache.as_os_str().is_empty());
+        assert!(!dirs.logs.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn socket_and_pid_path_formats() {
+        let dirs = PrimalDirs {
+            config: PathBuf::from("/cfg"),
+            data: PathBuf::from("/data"),
+            runtime: PathBuf::from("/run/biomeos"),
+            cache: PathBuf::from("/cache"),
+            logs: PathBuf::from("/logs"),
+        };
+
+        assert_eq!(
+            dirs.socket_path("swarmVine"),
+            PathBuf::from("/run/biomeos/swarmVine.sock")
+        );
+        assert_eq!(
+            dirs.pid_path("swarmVine"),
+            PathBuf::from("/run/biomeos/swarmVine.pid")
+        );
+    }
+
+    #[test]
+    fn env_overrides_take_precedence() {
+        let base = std::env::temp_dir().join(format!("swarmvine-paths-{}", std::process::id()));
+
+        temp_env::with_vars(
+            [
+                (
+                    env_overrides::CONFIG_DIR,
+                    Some(base.join("config").to_str().unwrap()),
+                ),
+                (
+                    env_overrides::DATA_DIR,
+                    Some(base.join("data").to_str().unwrap()),
+                ),
+                (
+                    env_overrides::RUNTIME_DIR,
+                    Some(base.join("runtime").to_str().unwrap()),
+                ),
+                (
+                    env_overrides::CACHE_DIR,
+                    Some(base.join("cache").to_str().unwrap()),
+                ),
+                (
+                    env_overrides::LOG_DIR,
+                    Some(base.join("logs").to_str().unwrap()),
+                ),
+            ],
+            || {
+                let dirs = PrimalDirs::resolve("myPrimal");
+                assert_eq!(dirs.config, base.join("config").join("myPrimal"));
+                assert_eq!(dirs.data, base.join("data").join("myPrimal"));
+                assert_eq!(dirs.runtime, base.join("runtime"));
+                assert_eq!(dirs.cache, base.join("cache").join("myPrimal"));
+                assert_eq!(dirs.logs, base.join("logs").join("myPrimal"));
+            },
+        );
+    }
 }

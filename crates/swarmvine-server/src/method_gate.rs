@@ -2,14 +2,14 @@
 //!
 //! Classifies every JSON-RPC method as Public or Protected and gates
 //! dispatch based on the current mode. Ships in Permissive mode (all calls
-//! allowed) per the ecoPrimals METHOD_GATE_STANDARD.
+//! allowed) per the ecoPrimals `METHOD_GATE_STANDARD`.
 
 use serde::{Deserialize, Serialize};
 
 /// Whether a method is freely callable or requires authorization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MethodVisibility {
+pub(crate) enum MethodVisibility {
     /// Callable by any peer without credentials.
     Public,
     /// Requires a valid token / caller identity when the gate is enforcing.
@@ -19,7 +19,7 @@ pub enum MethodVisibility {
 /// Gate operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum GateMode {
+pub(crate) enum GateMode {
     /// All calls allowed regardless of caller identity (JH-0 default).
     Permissive,
     /// Protected methods require valid authentication (JH-2 future).
@@ -28,87 +28,82 @@ pub enum GateMode {
 
 /// Resource limits carried in an ionic token (JH-2 prep).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResourceEnvelope {
+pub(crate) struct ResourceEnvelope {
     /// Maximum memory in MB the token grants.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mem_mb: Option<u64>,
+    pub(crate) mem_mb: Option<u64>,
     /// Maximum CPU cores the token grants.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cpu_cores: Option<u32>,
+    pub(crate) cpu_cores: Option<u32>,
     /// Maximum timeout in milliseconds per dispatch.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_timeout_ms: Option<u64>,
+    pub(crate) max_timeout_ms: Option<u64>,
     /// Methods this token may call. Empty = all allowed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub method_allowlist: Vec<String>,
+    pub(crate) method_allowlist: Vec<String>,
 }
 
 impl ResourceEnvelope {
     /// Check whether the envelope allows calling `method`.
-    pub fn allows_method(&self, method: &str) -> bool {
-        self.method_allowlist.is_empty()
-            || self.method_allowlist.iter().any(|m| m == method)
+    pub(crate) fn allows_method(&self, method: &str) -> bool {
+        self.method_allowlist.is_empty() || self.method_allowlist.iter().any(|m| m == method)
     }
 }
 
 /// Caller identity and resource context (JH-2 prep).
 #[derive(Debug, Clone, Default)]
-pub struct CallerContext {
+pub(crate) struct CallerContext {
     /// Caller identity (e.g. DID from ionic token).
-    pub identity: Option<String>,
+    pub(crate) identity: Option<String>,
     /// Resource envelope from token.
-    pub envelope: Option<ResourceEnvelope>,
+    pub(crate) envelope: Option<ResourceEnvelope>,
 }
 
 impl CallerContext {
     /// Anonymous caller with no token (permissive-mode default).
-    pub fn anonymous() -> Self {
+    pub(crate) fn anonymous() -> Self {
         Self::default()
     }
 
     /// Whether this caller presented a token with an envelope.
-    pub fn has_envelope(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) const fn has_envelope(&self) -> bool {
         self.envelope.is_some()
     }
 }
 
 /// Gate denial — contains JSON-RPC error code and message.
 #[derive(Debug, Clone)]
-pub struct GateDenial {
+pub(crate) struct GateDenial {
     /// JSON-RPC error code.
-    pub code: i32,
+    pub(crate) code: i32,
     /// Human-readable message.
-    pub message: String,
+    pub(crate) message: String,
 }
 
 /// Pre-dispatch capability gate.
-pub struct MethodGate {
+pub(crate) struct MethodGate {
     mode: GateMode,
 }
 
 impl MethodGate {
     /// Create a new gate in the given mode.
-    pub fn new(mode: GateMode) -> Self {
+    pub(crate) const fn new(mode: GateMode) -> Self {
         Self { mode }
     }
 
     /// Create a gate in permissive mode (JH-0 default).
-    pub fn permissive() -> Self {
+    pub(crate) const fn permissive() -> Self {
         Self::new(GateMode::Permissive)
     }
 
-    /// Current operating mode.
-    pub fn mode(&self) -> GateMode {
-        self.mode
-    }
-
     /// Check whether a method call should be allowed.
-    pub fn check(&self, method: &str) -> Result<(), GateDenial> {
+    pub(crate) fn check(&self, method: &str) -> Result<(), GateDenial> {
         self.check_with_context(method, &CallerContext::anonymous())
     }
 
     /// Check method access with full caller context (JH-2).
-    pub fn check_with_context(
+    pub(crate) fn check_with_context(
         &self,
         method: &str,
         ctx: &CallerContext,
@@ -117,13 +112,13 @@ impl MethodGate {
 
         match self.mode {
             GateMode::Permissive => {
-                if let Some(ref env) = ctx.envelope {
-                    if !env.allows_method(method) {
-                        return Err(GateDenial {
-                            code: -32001,
-                            message: format!("Token does not permit method: {method}"),
-                        });
-                    }
+                if let Some(ref env) = ctx.envelope
+                    && !env.allows_method(method)
+                {
+                    return Err(GateDenial {
+                        code: -32001,
+                        message: format!("Token does not permit method: {method}"),
+                    });
                 }
                 Ok(())
             }
@@ -136,13 +131,13 @@ impl MethodGate {
                             message: "Authentication required for protected method".into(),
                         });
                     }
-                    if let Some(ref env) = ctx.envelope {
-                        if !env.allows_method(method) {
-                            return Err(GateDenial {
-                                code: -32001,
-                                message: format!("Token does not permit method: {method}"),
-                            });
-                        }
+                    if let Some(ref env) = ctx.envelope
+                        && !env.allows_method(method)
+                    {
+                        return Err(GateDenial {
+                            code: -32001,
+                            message: format!("Token does not permit method: {method}"),
+                        });
                     }
                     Ok(())
                 }
@@ -155,13 +150,11 @@ impl MethodGate {
 ///
 /// Public: health probes, identity, capabilities, auth, lifecycle status,
 /// BTSP negotiation. Everything else: protected.
-pub fn classify_method(method: &str) -> MethodVisibility {
+pub(crate) fn classify_method(method: &str) -> MethodVisibility {
     match method {
-        "health.liveness" | "health.readiness" | "health.check" => MethodVisibility::Public,
-        "identity.get" | "capabilities.list" | "capability.list" | "lifecycle.status" => {
-            MethodVisibility::Public
-        }
-        "btsp.negotiate" | "primal.announce" => MethodVisibility::Public,
+        "health.liveness" | "health.readiness" | "health.check" | "identity.get"
+        | "capabilities.list" | "capability.list" | "lifecycle.status" | "btsp.negotiate"
+        | "primal.announce" => MethodVisibility::Public,
         m if m.starts_with("auth.") => MethodVisibility::Public,
         _ => MethodVisibility::Protected,
     }

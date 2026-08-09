@@ -6,22 +6,25 @@
 
 use anyhow::Result;
 use futures::StreamExt;
-use tarpc::server::{self, Channel};
 use swarmvine_core::tarpc_service::SwarmVineService;
+use tarpc::server::{self, Channel};
 use tracing::{info, warn};
 
 /// tarpc socket path — same convention as JSON-RPC but with `.tarpc.sock` suffix.
 fn tarpc_endpoint(primal_name: &str, family_id: Option<&str>) -> String {
-    let socket_dir = std::env::var(swarmvine_core::env_keys::BIOMEOS_SOCKET_DIR).unwrap_or_else(|_| {
-        let runtime_dir =
-            std::env::var(swarmvine_core::env_keys::XDG_RUNTIME_DIR).unwrap_or_else(|_| "/tmp".to_owned());
-        format!("{runtime_dir}/biomeos")
-    });
+    let socket_dir =
+        std::env::var(swarmvine_core::env_keys::BIOMEOS_SOCKET_DIR).unwrap_or_else(|_| {
+            let runtime_dir = std::env::var(swarmvine_core::env_keys::XDG_RUNTIME_DIR)
+                .unwrap_or_else(|_| "/tmp".to_owned());
+            format!("{runtime_dir}/biomeos")
+        });
 
-    let filename = match family_id.filter(|id| !id.is_empty() && *id != "default") {
-        Some(fid) => format!("{primal_name}-{fid}.tarpc.sock"),
-        None => format!("{primal_name}.tarpc.sock"),
-    };
+    let filename = family_id
+        .filter(|id| !id.is_empty() && *id != "default")
+        .map_or_else(
+            || format!("{primal_name}.tarpc.sock"),
+            |fid| format!("{primal_name}-{fid}.tarpc.sock"),
+        );
 
     std::path::PathBuf::from(&socket_dir)
         .join(&filename)
@@ -33,7 +36,7 @@ fn tarpc_endpoint(primal_name: &str, family_id: Option<&str>) -> String {
 ///
 /// This runs as a background task — the JSON-RPC listener remains the
 /// primary accept loop and the primal's lifecycle anchor.
-pub async fn start_tarpc_listener(
+pub(crate) async fn start_tarpc_listener(
     primal_name: &str,
     family_id: Option<&str>,
     primal: std::sync::Arc<swarmvine_core::SwarmVinePrimal>,
@@ -60,7 +63,9 @@ pub async fn start_tarpc_listener(
                         let handler = SwarmVineServiceHandler { primal };
                         server::BaseChannel::with_defaults(transport)
                             .execute(handler.serve())
-                            .for_each(|response| async move { tokio::spawn(response); })
+                            .for_each(|response| async move {
+                                tokio::spawn(response);
+                            })
                             .await;
                     });
                 }
@@ -77,13 +82,17 @@ pub async fn start_tarpc_listener(
 /// G65: Handle a pre-negotiated tarpc stream (single-socket mode).
 ///
 /// Called when protocol negotiation selected tarpc on the shared socket.
-pub async fn handle_tarpc_stream<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
+pub(crate) fn handle_tarpc_stream<
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+>(
     _stream: S,
 ) {
-    // In Phase 3, the negotiated stream is wrapped as a tarpc transport.
-    // Full implementation wires through tarpc::serde_transport on the raw stream.
-    // Placeholder: tarpc framing on pre-connected stream requires transport adaptation.
-    tracing::debug!("G65 tarpc stream handoff (stub — full wiring in convergence)");
+    // tarpc 0.37 requires its own listener for transport framing (bincode + length-prefix).
+    // Single-socket G65 tarpc requires tarpc upstream support for arbitrary AsyncRead/Write.
+    // Track: https://github.com/google/tarpc/issues — convergence target: tarpc 0.38+.
+    tracing::warn!(
+        "G65 tarpc negotiated but single-socket transport not yet supported by tarpc 0.37"
+    );
 }
 
 /// tarpc service handler — bridges the tarpc trait to the primal implementation.
@@ -122,12 +131,233 @@ impl swarmvine_core::tarpc_service::SwarmVineService for SwarmVineServiceHandler
         swarmvine_core::tarpc_service::CapabilitiesResponse {
             primal: "swarmVine".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            methods: vec![
-                "health.liveness".to_owned(),
-                "health.readiness".to_owned(),
-                "health.check".to_owned(),
-                "capabilities.list".to_owned(),
-            ],
+            methods: crate::dispatch::METHODS
+                .iter()
+                .map(|&s| s.to_owned())
+                .collect(),
         }
+    }
+
+    async fn gossip_inject(
+        self,
+        _: tarpc::context::Context,
+        topic: String,
+        key: String,
+        payload: String,
+    ) -> String {
+        use swarmvine_core::GossipTopic;
+        let topic = match topic.as_str() {
+            "tower" => GossipTopic::Tower,
+            "data" => GossipTopic::Data,
+            "compute" => GossipTopic::Compute,
+            _ => return serde_json::json!({"error": "invalid topic"}).to_string(),
+        };
+        let payload_val: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
+        let result = self.primal.engine().inject(topic, key, payload_val).await;
+        serde_json::json!({"result": format!("{result:?}")}).to_string()
+    }
+
+    async fn gossip_query(
+        self,
+        _: tarpc::context::Context,
+        topic: String,
+        key_prefix: Option<String>,
+    ) -> String {
+        use swarmvine_core::GossipTopic;
+        let topic = match topic.as_str() {
+            "tower" => GossipTopic::Tower,
+            "data" => GossipTopic::Data,
+            "compute" => GossipTopic::Compute,
+            _ => return serde_json::json!({"error": "invalid topic"}).to_string(),
+        };
+        let entries = self
+            .primal
+            .engine()
+            .query(topic, key_prefix.as_deref())
+            .await;
+        serde_json::json!({"entries": entries, "count": entries.len()}).to_string()
+    }
+
+    async fn gossip_status(self, _: tarpc::context::Context) -> String {
+        let stats = self.primal.engine().stats().await;
+        serde_json::to_string(&stats).unwrap_or_default()
+    }
+
+    async fn gossip_peers(self, _: tarpc::context::Context) -> String {
+        let peers = self.primal.engine().peer_stats().await;
+        serde_json::json!({"peers": peers, "node_id": self.primal.engine().node_id()}).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tarpc_endpoint_uses_biomeos_socket_dir() {
+        temp_env::with_var(
+            swarmvine_core::env_keys::BIOMEOS_SOCKET_DIR,
+            Some("/custom/socket/dir"),
+            || {
+                assert_eq!(
+                    tarpc_endpoint("swarmVine", None),
+                    "/custom/socket/dir/swarmVine.tarpc.sock"
+                );
+                assert_eq!(
+                    tarpc_endpoint("swarmVine", Some("ecoPrimal")),
+                    "/custom/socket/dir/swarmVine-ecoPrimal.tarpc.sock"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn tarpc_endpoint_default_family_uses_unsuffixed_name() {
+        temp_env::with_var(
+            swarmvine_core::env_keys::BIOMEOS_SOCKET_DIR,
+            Some("/tmp/test-sockets"),
+            || {
+                assert_eq!(
+                    tarpc_endpoint("swarmVine", Some("default")),
+                    "/tmp/test-sockets/swarmVine.tarpc.sock"
+                );
+                assert_eq!(
+                    tarpc_endpoint("swarmVine", Some("")),
+                    "/tmp/test-sockets/swarmVine.tarpc.sock"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn tarpc_endpoint_falls_back_to_xdg_runtime_dir() {
+        temp_env::with_vars(
+            [
+                (swarmvine_core::env_keys::BIOMEOS_SOCKET_DIR, None),
+                (
+                    swarmvine_core::env_keys::XDG_RUNTIME_DIR,
+                    Some("/run/user/9999"),
+                ),
+            ],
+            || {
+                assert_eq!(
+                    tarpc_endpoint("swarmVine", None),
+                    "/run/user/9999/biomeos/swarmVine.tarpc.sock"
+                );
+            },
+        );
+    }
+
+    async fn running_handler() -> SwarmVineServiceHandler {
+        use swarmvine_core::PrimalLifecycle;
+        let mut primal = swarmvine_core::SwarmVinePrimal::with_node_id("testGate".to_owned());
+        primal.start().await.unwrap();
+        SwarmVineServiceHandler {
+            primal: std::sync::Arc::new(primal),
+        }
+    }
+
+    #[tokio::test]
+    async fn handler_health_liveness_returns_true_when_running() {
+        use swarmvine_core::tarpc_service::SwarmVineService;
+        let handler = running_handler().await;
+        let ctx = tarpc::context::current();
+        assert!(SwarmVineService::health_liveness(handler, ctx).await);
+    }
+
+    #[tokio::test]
+    async fn handler_health_readiness_returns_true_when_running() {
+        use swarmvine_core::tarpc_service::SwarmVineService;
+        let handler = running_handler().await;
+        let ctx = tarpc::context::current();
+        assert!(SwarmVineService::health_readiness(handler, ctx).await);
+    }
+
+    #[tokio::test]
+    async fn handler_health_check_returns_swarmvine_name() {
+        use swarmvine_core::tarpc_service::SwarmVineService;
+        let handler = running_handler().await;
+        let ctx = tarpc::context::current();
+        let resp = SwarmVineService::health_check(handler, ctx).await;
+        assert_eq!(resp.primal, "swarmVine");
+        assert_eq!(resp.version, env!("CARGO_PKG_VERSION"));
+        assert!(resp.status.contains("Healthy"));
+    }
+
+    #[tokio::test]
+    async fn handler_capabilities_list_includes_gossip_methods() {
+        use swarmvine_core::tarpc_service::SwarmVineService;
+        let handler = running_handler().await;
+        let ctx = tarpc::context::current();
+        let resp = SwarmVineService::capabilities_list(handler, ctx).await;
+        assert_eq!(resp.primal, "swarmVine");
+        assert!(resp.methods.contains(&"gossip.spread".to_owned()));
+        assert!(resp.methods.contains(&"gossip.inject".to_owned()));
+        assert!(resp.methods.contains(&"gossip.query".to_owned()));
+        assert_eq!(resp.methods.len(), crate::dispatch::METHODS.len());
+    }
+
+    #[tokio::test]
+    async fn handler_gossip_inject_and_query() {
+        use swarmvine_core::tarpc_service::SwarmVineService;
+        let handler = running_handler().await;
+        let ctx = tarpc::context::current();
+        let inject_resp = SwarmVineService::gossip_inject(
+            handler.clone(),
+            ctx,
+            "tower".to_owned(),
+            "capability.advertise:testGate:nestGate".to_owned(),
+            r#"{"capabilities":["content.get"]}"#.to_owned(),
+        )
+        .await;
+        let inject_json: serde_json::Value = serde_json::from_str(&inject_resp).unwrap();
+        assert_eq!(inject_json["result"], "Accepted");
+
+        let ctx = tarpc::context::current();
+        let query_resp =
+            SwarmVineService::gossip_query(handler, ctx, "tower".to_owned(), None).await;
+        let query_json: serde_json::Value = serde_json::from_str(&query_resp).unwrap();
+        assert_eq!(query_json["count"], 1);
+        assert_eq!(query_json["entries"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn handler_gossip_status_returns_entry_counts() {
+        use swarmvine_core::tarpc_service::SwarmVineService;
+        let handler = running_handler().await;
+        let ctx = tarpc::context::current();
+        let status_json = SwarmVineService::gossip_status(handler, ctx).await;
+        let stats: serde_json::Value = serde_json::from_str(&status_json).unwrap();
+        assert!(stats["tower_entries"].is_number());
+        assert!(stats["data_entries"].is_number());
+        assert!(stats["compute_entries"].is_number());
+    }
+
+    #[tokio::test]
+    async fn handler_gossip_peers_returns_node_id() {
+        use swarmvine_core::tarpc_service::SwarmVineService;
+        let handler = running_handler().await;
+        let ctx = tarpc::context::current();
+        let peers = SwarmVineService::gossip_peers(handler, ctx).await;
+        let parsed: serde_json::Value = serde_json::from_str(&peers).unwrap();
+        assert_eq!(parsed["node_id"], "testGate");
+        assert!(parsed["peers"].is_object());
+    }
+
+    #[tokio::test]
+    async fn handler_gossip_inject_rejects_invalid_topic() {
+        use swarmvine_core::tarpc_service::SwarmVineService;
+        let handler = running_handler().await;
+        let ctx = tarpc::context::current();
+        let resp = SwarmVineService::gossip_inject(
+            handler,
+            ctx,
+            "invalid".to_owned(),
+            "some.key".to_owned(),
+            "{}".to_owned(),
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(parsed["error"], "invalid topic");
     }
 }

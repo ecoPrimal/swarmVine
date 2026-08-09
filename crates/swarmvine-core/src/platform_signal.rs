@@ -24,10 +24,8 @@ pub async fn shutdown_signal_named() -> &'static str {
 async fn platform_signal_impl() -> &'static str {
     use tokio::signal::unix::{SignalKind, signal};
 
-    let mut sigterm =
-        signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-    let mut sigint =
-        signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
 
     tokio::select! {
         _ = sigterm.recv() => "SIGTERM",

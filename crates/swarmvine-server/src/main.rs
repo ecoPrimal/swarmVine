@@ -6,19 +6,24 @@
 //!
 //! The primal does not choose its transport. The launcher or Songbird provides it.
 
-mod announce;
-mod dispatch;
-mod method_gate;
-mod server;
-mod spread;
-mod tarpc_server;
+#![allow(clippy::redundant_pub_crate)]
+
+pub(crate) mod announce;
+pub(crate) mod dispatch;
+pub(crate) mod method_gate;
+pub(crate) mod server;
+pub(crate) mod spread;
+pub(crate) mod tarpc_server;
 
 use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "swarmvine", about = "swarmVine — epidemic gossip engine for the Tower Atomic mesh")]
+#[command(
+    name = "swarmvine",
+    about = "swarmVine — epidemic gossip engine for the Tower Atomic mesh"
+)]
 struct Cli {
     /// Family ID for socket naming (production mode).
     #[arg(long, env = "FAMILY_ID")]
@@ -90,9 +95,7 @@ async fn main() -> Result<()> {
     let evict_primal = Arc::clone(&primal_arc);
     let evict_interval = cli.evict_interval;
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(
-            std::time::Duration::from_secs(evict_interval),
-        );
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(evict_interval));
         loop {
             interval.tick().await;
             let evicted = evict_primal.engine().evict_expired().await;
@@ -130,7 +133,7 @@ async fn main() -> Result<()> {
     let endpoint: Option<server::TransportEndpoint> = cli
         .transport_endpoint
         .as_deref()
-        .map(|s| serde_json::from_str(s))
+        .map(serde_json::from_str)
         .transpose()
         .map_err(|e| anyhow::anyhow!("invalid TRANSPORT_ENDPOINT: {e}"))?;
 
@@ -138,7 +141,7 @@ async fn main() -> Result<()> {
         "swarmvine",
         cli.family_id.as_deref(),
         endpoint.as_ref(),
-        &*primal_arc,
+        &primal_arc,
         cli.negotiate,
     )
     .await
@@ -161,6 +164,6 @@ async fn run_gossip_listener(
     loop {
         let (stream, peer_addr) = listener.accept().await?;
         tracing::debug!(peer = %peer_addr, "Cross-gate gossip connection");
-        server::handle_tcp_connection(stream, &*primal, &gate).await;
+        server::handle_tcp_connection(stream, &primal, &gate).await;
     }
 }

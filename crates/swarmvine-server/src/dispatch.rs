@@ -1,18 +1,19 @@
 //! JSON-RPC 2.0 method dispatch with gossip engine handlers.
 
-use swarmvine_core::{GossipEntry, GossipTopic, IngestResult, PrimalHealth};
 use crate::method_gate::MethodGate;
+use swarmvine_core::ribocipher;
+use swarmvine_core::{GossipEntry, GossipTopic, IngestResult, PrimalHealth};
 
 fn skunkbat_sock_path() -> String {
-    std::env::var("SWARMVINE_SKUNKBAT_SOCK")
-        .unwrap_or_else(|_| "/run/membrane/skunkbat.sock".to_string())
+    std::env::var(swarmvine_core::env_keys::SKUNKBAT_SOCKET)
+        .unwrap_or_else(|_| "/tmp/biomeos/skunkbat.sock".to_owned())
 }
 
 /// Whether the vine-bat pre-accept hook is enabled. Disabled in test builds
-/// unless SWARMVINE_SKUNKBAT_SOCK is explicitly set.
+/// unless `SWARMVINE_SKUNKBAT_SOCK` is explicitly set.
 fn vine_bat_enabled() -> bool {
     if cfg!(test) {
-        std::env::var("SWARMVINE_SKUNKBAT_SOCK").is_ok()
+        std::env::var(swarmvine_core::env_keys::SKUNKBAT_SOCKET).is_ok()
     } else {
         true
     }
@@ -21,7 +22,7 @@ fn vine_bat_enabled() -> bool {
 const PRIMAL_NAME: &str = "swarmVine";
 const PRIMAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const METHODS: &[&str] = &[
+pub(crate) const METHODS: &[&str] = &[
     "health.liveness",
     "health.readiness",
     "health.check",
@@ -33,19 +34,18 @@ pub const METHODS: &[&str] = &[
     "gossip.query",
     "gossip.status",
     "gossip.peers",
+    "gossip.subscribe",
 ];
 
 /// Dispatch a JSON-RPC request and return the response string.
-///
-/// Gossip methods are async — this wrapper runs them on the current runtime.
-pub fn handle_request(
+pub(crate) async fn handle_request(
     raw: &str,
     primal: &swarmvine_core::SwarmVinePrimal,
     gate: &MethodGate,
 ) -> String {
     let req: serde_json::Value = match serde_json::from_str(raw) {
         Ok(v) => v,
-        Err(_) => return error_response(serde_json::Value::Null, -32700, "Parse error"),
+        Err(_) => return error_response(&serde_json::Value::Null, -32700, "Parse error"),
     };
 
     let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
@@ -55,10 +55,13 @@ pub fn handle_request(
         .unwrap_or("");
 
     if let Err(denial) = gate.check(method) {
-        return error_response(id, denial.code, &denial.message);
+        return error_response(&id, denial.code, &denial.message);
     }
 
-    let params = req.get("params").cloned().unwrap_or(serde_json::json!({}));
+    let params = req
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
 
     let result = match method {
         "health.liveness" => serde_json::json!({ "alive": true }),
@@ -104,45 +107,18 @@ pub fn handle_request(
             })
         }
 
-        // --- Gossip methods (async — block on current runtime) ---
+        // --- Gossip methods ---
+        "gossip.spread" => handle_gossip_spread(primal, &params).await,
+        "gossip.inject" => handle_gossip_inject(primal, &params).await,
+        "gossip.query" => handle_gossip_query(primal, &params).await,
+        "gossip.status" => handle_gossip_status(primal).await,
+        "gossip.peers" => handle_gossip_peers(primal).await,
+        "gossip.subscribe" => serde_json::json!({
+            "status": "not_yet_streaming",
+            "message": "gossip.subscribe will support streaming in Phase 4",
+        }),
 
-        "gossip.spread" => {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(
-                    handle_gossip_spread(primal, &params),
-                )
-            })
-        }
-        "gossip.inject" => {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(
-                    handle_gossip_inject(primal, &params),
-                )
-            })
-        }
-        "gossip.query" => {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(
-                    handle_gossip_query(primal, &params),
-                )
-            })
-        }
-        "gossip.status" => {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(
-                    handle_gossip_status(primal),
-                )
-            })
-        }
-        "gossip.peers" => {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(
-                    handle_gossip_peers(primal),
-                )
-            })
-        }
-
-        _ => return error_response(id, -32601, "Method not found"),
+        _ => return error_response(&id, -32601, "Method not found"),
     };
 
     serde_json::json!({
@@ -165,26 +141,25 @@ async fn handle_gossip_spread(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
 
-    // Support single entry or batch
-    let entries_raw = if let Some(arr) = params.get("entries").and_then(serde_json::Value::as_array)
-    {
-        arr.clone()
-    } else if let Some(entry) = params.get("entry") {
-        vec![entry.clone()]
-    } else {
-        return serde_json::json!({ "error": "Missing 'entry' or 'entries' param" });
-    };
+    // Support single entry or batch (reference slice — no array clone)
+    let entry_refs: Vec<&serde_json::Value> =
+        if let Some(arr) = params.get("entries").and_then(serde_json::Value::as_array) {
+            arr.iter().collect()
+        } else if let Some(entry) = params.get("entry") {
+            vec![entry]
+        } else {
+            return serde_json::json!({ "error": "Missing 'entry' or 'entries' param" });
+        };
 
     let mut accepted = 0u32;
     let mut rejected = 0u32;
 
-    for raw_entry in entries_raw {
-        let entry: GossipEntry = match serde_json::from_value(raw_entry) {
-            Ok(e) => e,
-            Err(_) => {
-                rejected += 1;
-                continue;
-            }
+    for raw_entry in entry_refs {
+        let entry: GossipEntry = if let Ok(e) = serde_json::from_value(raw_entry.clone()) {
+            e
+        } else {
+            rejected += 1;
+            continue;
         };
 
         // Vine-bat loop: pre-accept validation via skunkBat metadata.analyze
@@ -215,7 +190,9 @@ async fn handle_gossip_inject(
         Some("tower") => GossipTopic::Tower,
         Some("data") => GossipTopic::Data,
         Some("compute") => GossipTopic::Compute,
-        _ => return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" }),
+        _ => {
+            return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
+        }
     };
 
     let key = match params.get("key").and_then(serde_json::Value::as_str) {
@@ -226,7 +203,7 @@ async fn handle_gossip_inject(
     let payload = params
         .get("payload")
         .cloned()
-        .unwrap_or(serde_json::json!({}));
+        .unwrap_or_else(|| serde_json::json!({}));
 
     let result = primal.engine().inject(topic, key, payload).await;
 
@@ -245,12 +222,12 @@ async fn handle_gossip_query(
         Some("tower") => GossipTopic::Tower,
         Some("data") => GossipTopic::Data,
         Some("compute") => GossipTopic::Compute,
-        _ => return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" }),
+        _ => {
+            return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
+        }
     };
 
-    let prefix = params
-        .get("key_prefix")
-        .and_then(serde_json::Value::as_str);
+    let prefix = params.get("key_prefix").and_then(serde_json::Value::as_str);
 
     let entries = primal.engine().query(topic, prefix).await;
 
@@ -262,17 +239,13 @@ async fn handle_gossip_query(
 }
 
 /// Handle `gossip.status` — current gossip table statistics.
-async fn handle_gossip_status(
-    primal: &swarmvine_core::SwarmVinePrimal,
-) -> serde_json::Value {
+async fn handle_gossip_status(primal: &swarmvine_core::SwarmVinePrimal) -> serde_json::Value {
     let stats = primal.engine().stats().await;
     serde_json::json!(stats)
 }
 
 /// Handle `gossip.peers` — per-peer exchange statistics.
-async fn handle_gossip_peers(
-    primal: &swarmvine_core::SwarmVinePrimal,
-) -> serde_json::Value {
+async fn handle_gossip_peers(primal: &swarmvine_core::SwarmVinePrimal) -> serde_json::Value {
     let peers = primal.engine().peer_stats().await;
     serde_json::json!({
         "node_id": primal.engine().node_id(),
@@ -285,9 +258,9 @@ async fn handle_gossip_peers(
 /// before accepting it from a remote peer. If skunkBat is unreachable, default to allow
 /// (graceful degradation — bat validates when available, vine spreads regardless).
 async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::timeout;
-    use std::time::Duration;
 
     if !vine_bat_enabled() {
         return true;
@@ -312,23 +285,24 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
         },
     });
 
-    let stream = match timeout(
+    let Ok(Ok(stream)) = timeout(
         Duration::from_millis(500),
         tokio::net::UnixStream::connect(&sock_path),
     )
     .await
-    {
-        Ok(Ok(s)) => s,
-        _ => {
-            tracing::debug!("vine-bat: skunkBat unreachable — default allow");
-            return true;
-        }
+    else {
+        tracing::debug!("vine-bat: skunkBat unreachable — default allow");
+        return true;
     };
 
     let (mut rd, mut wr) = stream.into_split();
 
-    let mut frame = vec![0xEC, 0x01];
-    frame.extend_from_slice(serde_json::to_string(&request).unwrap_or_default().as_bytes());
+    let mut frame = ribocipher::CLEAR_JSONRPC.to_vec();
+    frame.extend_from_slice(
+        serde_json::to_string(&request)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
     frame.push(b'\n');
 
     if wr.write_all(&frame).await.is_err() {
@@ -340,7 +314,14 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
     let _ = timeout(Duration::from_millis(500), rd.read_to_end(&mut buf)).await;
 
     // Strip riboCipher prefix if present
-    let json_start = if buf.len() >= 2 && buf[0] == 0xEC && buf[1] == 0x01 { 2 } else { 0 };
+    let json_start = if buf.len() >= 2
+        && buf[0] == ribocipher::SIGNAL_CLEAR
+        && buf[1] == ribocipher::PROTOCOL_JSONRPC
+    {
+        2
+    } else {
+        0
+    };
     let text = match std::str::from_utf8(&buf[json_start..]) {
         Ok(t) => t.trim(),
         Err(_) => return true,
@@ -360,7 +341,7 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
     true
 }
 
-fn error_response(id: serde_json::Value, code: i32, message: &str) -> String {
+fn error_response(id: &serde_json::Value, code: i32, message: &str) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -383,54 +364,54 @@ mod tests {
         MethodGate::permissive()
     }
 
-    #[test]
-    fn liveness_returns_alive() {
+    #[tokio::test]
+    async fn liveness_returns_alive() {
         let primal = make_primal();
         let gate = make_gate();
         let req = r#"{"jsonrpc":"2.0","id":1,"method":"health.liveness"}"#;
         let resp: serde_json::Value =
-            serde_json::from_str(&handle_request(req, &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
         assert_eq!(resp["result"]["alive"], true);
     }
 
-    #[test]
-    fn capabilities_list_includes_gossip_domains() {
+    #[tokio::test]
+    async fn capabilities_list_includes_gossip_domains() {
         let primal = make_primal();
         let gate = make_gate();
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"capabilities.list"}"#;
         let resp: serde_json::Value =
-            serde_json::from_str(&handle_request(req, &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
         assert_eq!(resp["result"]["primal"], PRIMAL_NAME);
         let domains = resp["result"]["gossip_domains"].as_array().unwrap();
         assert_eq!(domains.len(), 3);
     }
 
-    #[test]
-    fn unknown_method_returns_error() {
+    #[tokio::test]
+    async fn unknown_method_returns_error() {
         let primal = make_primal();
         let gate = make_gate();
         let req = r#"{"jsonrpc":"2.0","id":3,"method":"unknown.method"}"#;
         let resp: serde_json::Value =
-            serde_json::from_str(&handle_request(req, &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
         assert_eq!(resp["error"]["code"], -32601);
     }
 
-    #[test]
-    fn invalid_json_returns_parse_error() {
+    #[tokio::test]
+    async fn invalid_json_returns_parse_error() {
         let primal = make_primal();
         let gate = make_gate();
         let resp: serde_json::Value =
-            serde_json::from_str(&handle_request("not json", &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request("not json", &primal, &gate).await).unwrap();
         assert_eq!(resp["error"]["code"], -32700);
     }
 
-    #[test]
-    fn btsp_negotiate_returns_null_cipher() {
+    #[tokio::test]
+    async fn btsp_negotiate_returns_null_cipher() {
         let primal = make_primal();
         let gate = make_gate();
         let req = r#"{"jsonrpc":"2.0","id":4,"method":"btsp.negotiate","params":{"session_id":"test","preferred_cipher":"chacha20-poly1305","bond_type":"Covalent"}}"#;
         let resp: serde_json::Value =
-            serde_json::from_str(&handle_request(req, &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
         assert_eq!(resp["result"]["cipher"], "null");
     }
 
@@ -441,12 +422,13 @@ mod tests {
 
         let inject_req = r#"{"jsonrpc":"2.0","id":5,"method":"gossip.inject","params":{"topic":"tower","key":"capability.advertise:testGate:nestGate","payload":{"capabilities":["content.get"]}}}"#;
         let inject_resp: serde_json::Value =
-            serde_json::from_str(&handle_request(inject_req, &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request(inject_req, &primal, &gate).await).unwrap();
         assert_eq!(inject_resp["result"]["result"], "Accepted");
 
-        let query_req = r#"{"jsonrpc":"2.0","id":6,"method":"gossip.query","params":{"topic":"tower"}}"#;
+        let query_req =
+            r#"{"jsonrpc":"2.0","id":6,"method":"gossip.query","params":{"topic":"tower"}}"#;
         let query_resp: serde_json::Value =
-            serde_json::from_str(&handle_request(query_req, &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request(query_req, &primal, &gate).await).unwrap();
         assert_eq!(query_resp["result"]["count"], 1);
     }
 
@@ -456,7 +438,7 @@ mod tests {
         let gate = make_gate();
         let req = r#"{"jsonrpc":"2.0","id":7,"method":"gossip.status"}"#;
         let resp: serde_json::Value =
-            serde_json::from_str(&handle_request(req, &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
         assert!(resp["result"]["tower_entries"].is_number());
         assert!(resp["result"]["data_entries"].is_number());
         assert!(resp["result"]["compute_entries"].is_number());
@@ -468,7 +450,7 @@ mod tests {
         let gate = make_gate();
         let req = r#"{"jsonrpc":"2.0","id":8,"method":"gossip.peers"}"#;
         let resp: serde_json::Value =
-            serde_json::from_str(&handle_request(req, &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
         assert_eq!(resp["result"]["node_id"], "testGate");
     }
 
@@ -479,7 +461,216 @@ mod tests {
 
         let req = r#"{"jsonrpc":"2.0","id":9,"method":"gossip.spread","params":{"from":"gate1","entry":{"topic":"data","key":"cas.have:gate1","payload":{"hashes":["abc"]},"origin_gate":"gate1","nonce":"deadbeef00000001deadbeef00000002","ttl":5,"version":1,"created_at_epoch":1723100000,"expires_at_epoch":1923100000}}}"#;
         let resp: serde_json::Value =
-            serde_json::from_str(&handle_request(req, &primal, &gate)).unwrap();
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
         assert_eq!(resp["result"]["accepted"], 1);
+    }
+
+    #[tokio::test]
+    async fn gossip_subscribe_returns_phase4_message() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":10,"method":"gossip.subscribe"}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["status"], "not_yet_streaming");
+        assert!(
+            resp["result"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Phase 4")
+        );
+    }
+
+    #[tokio::test]
+    async fn primal_announce_returns_expected_data() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":11,"method":"primal.announce"}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["primal"], PRIMAL_NAME);
+        assert_eq!(resp["result"]["version"], PRIMAL_VERSION);
+        assert_eq!(
+            resp["result"]["capabilities"],
+            serde_json::json!(crate::announce::capabilities())
+        );
+        assert_eq!(
+            resp["result"]["signal_tiers"],
+            serde_json::json!(crate::announce::signal_tiers())
+        );
+        let methods = resp["result"]["methods"].as_array().unwrap();
+        assert!(methods.iter().any(|m| m == "gossip.spread"));
+    }
+
+    #[tokio::test]
+    async fn capability_list_legacy_alias_works() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":12,"method":"capability.list"}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["primal"], PRIMAL_NAME);
+        assert_eq!(resp["result"]["protocol"], "jsonrpc-2.0");
+        let domains = resp["result"]["gossip_domains"].as_array().unwrap();
+        assert_eq!(domains.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn health_readiness_returns_ready_and_capabilities() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":13,"method":"health.readiness"}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert!(resp["result"]["ready"].is_boolean());
+        let capabilities = resp["result"]["capabilities"].as_array().unwrap();
+        assert!(capabilities.iter().any(|m| m == "health.liveness"));
+        assert!(capabilities.iter().any(|m| m == "gossip.spread"));
+    }
+
+    #[tokio::test]
+    async fn health_check_includes_node_id() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":14,"method":"health.check"}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["node_id"], "testGate");
+        assert!(resp["result"]["status"].is_string());
+        assert!(resp["result"]["liveness"].is_boolean());
+        assert!(resp["result"]["readiness"].is_boolean());
+    }
+
+    /// Vertebrate evolution self-audit (Wave 157a):
+    /// Verify every method in `capability_registry.toml` has a real handler,
+    /// and no unknown method silently returns a health response.
+    #[tokio::test]
+    async fn self_audit_rpc_surface_matches_registry() {
+        let registry_methods: &[&str] = &[
+            // [capabilities.health]
+            "health.liveness",
+            "health.readiness",
+            "health.check",
+            // [capabilities.lifecycle]
+            "capabilities.list",
+            "primal.announce",
+            "btsp.negotiate",
+            // [capabilities.gossip]
+            "gossip.spread",
+            "gossip.inject",
+            "gossip.query",
+            "gossip.subscribe",
+            "gossip.status",
+            "gossip.peers",
+        ];
+
+        // Every registry method must be in METHODS
+        for method in registry_methods {
+            assert!(
+                METHODS.contains(method),
+                "capability_registry.toml declares '{method}' but METHODS array is missing it"
+            );
+        }
+
+        // Every METHODS entry must be in registry (no undeclared surface)
+        for method in METHODS {
+            assert!(
+                registry_methods.contains(method),
+                "METHODS declares '{method}' but it's not in capability_registry.toml"
+            );
+        }
+
+        // Every registry method must return a result, not a -32601 error
+        let primal = make_primal();
+        let gate = make_gate();
+        for method in registry_methods {
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","id":99,"method":"{method}","params":{{"topic":"tower","key":"self_audit_test","from":"testGate","entry":{{"topic":"tower","key":"self_audit","payload":{{}},"origin_gate":"testGate","nonce":"aaaa000000000000bbbb000000000000","ttl":5,"version":1,"created_at_epoch":1723100000,"expires_at_epoch":1923100000}}}}}}"#
+            );
+            let resp: serde_json::Value =
+                serde_json::from_str(&handle_request(&req, &primal, &gate).await).unwrap();
+            assert!(
+                resp.get("result").is_some(),
+                "Method '{method}' returned error instead of result: {resp}"
+            );
+        }
+
+        // Unknown methods MUST return -32601 (no bearDog silent-health anti-pattern)
+        let unknown_req = r#"{"jsonrpc":"2.0","id":99,"method":"nonexistent.method"}"#;
+        let unknown_resp: serde_json::Value =
+            serde_json::from_str(&handle_request(unknown_req, &primal, &gate).await).unwrap();
+        assert_eq!(
+            unknown_resp["error"]["code"], -32601,
+            "Unknown method must return -32601, not a result"
+        );
+        assert!(
+            unknown_resp.get("result").is_none(),
+            "Unknown method must NOT return a result (no silent health fallback)"
+        );
+    }
+
+    #[tokio::test]
+    async fn gossip_inject_missing_key_returns_error() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req =
+            r#"{"jsonrpc":"2.0","id":20,"method":"gossip.inject","params":{"topic":"tower"}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["error"], "Missing 'key'");
+    }
+
+    #[tokio::test]
+    async fn gossip_inject_invalid_topic_returns_error() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":21,"method":"gossip.inject","params":{"topic":"invalid","key":"some.key"}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert!(
+            resp["result"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("Invalid or missing 'topic'")
+        );
+    }
+
+    #[tokio::test]
+    async fn gossip_query_invalid_topic_returns_error() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":22,"method":"gossip.query","params":{"topic":"bogus"}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert!(
+            resp["result"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("Invalid or missing 'topic'")
+        );
+    }
+
+    #[tokio::test]
+    async fn gossip_spread_missing_entries_returns_error() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":23,"method":"gossip.spread","params":{"from":"peer1"}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(
+            resp["result"]["error"],
+            "Missing 'entry' or 'entries' param"
+        );
+    }
+
+    #[tokio::test]
+    async fn gossip_spread_malformed_entry_increments_rejected() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":24,"method":"gossip.spread","params":{"from":"peer1","entries":[{"not":"a gossip entry"}]}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["accepted"], 0);
+        assert_eq!(resp["result"]["rejected"], 1);
     }
 }

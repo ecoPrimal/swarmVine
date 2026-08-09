@@ -54,14 +54,17 @@ impl IpcProtocol {
 
     /// All supported protocols (tarpc preferred).
     #[must_use]
-    pub fn all_supported() -> Vec<Self> {
-        vec![Self::Tarpc, Self::JsonRpc]
+    pub const fn all_supported() -> &'static [Self] {
+        &[Self::Tarpc, Self::JsonRpc]
     }
 }
 
 /// Select best protocol from client's preference list.
 #[must_use]
-pub fn select_protocol(client_prefs: &[IpcProtocol], server_supports: &[IpcProtocol]) -> IpcProtocol {
+pub fn select_protocol(
+    client_prefs: &[IpcProtocol],
+    server_supports: &[IpcProtocol],
+) -> IpcProtocol {
     for proto in client_prefs {
         if server_supports.contains(proto) {
             return *proto;
@@ -73,6 +76,11 @@ pub fn select_protocol(client_prefs: &[IpcProtocol], server_supports: &[IpcProto
 /// Server-side negotiation: read client request, select best, respond.
 ///
 /// Returns `None` if no `PROTOCOLS:` line received (backward compat).
+///
+/// # Errors
+///
+/// Returns an error if writing the negotiated protocol response to the transport
+/// fails. Read failures and timeouts yield `Ok(None)` for backward compatibility.
 pub async fn negotiate_server<T>(
     transport: &mut T,
     server_supported: &[IpcProtocol],
@@ -107,10 +115,7 @@ where
 
                 let selected = select_protocol(&protocols, server_supported);
                 let response = format!("PROTOCOL: {}\n", selected.wire_name());
-                reader
-                    .get_mut()
-                    .write_all(response.as_bytes())
-                    .await?;
+                reader.get_mut().write_all(response.as_bytes()).await?;
                 reader.get_mut().flush().await?;
                 info!("server negotiated: {selected}");
                 Ok(Some(selected))
@@ -124,5 +129,109 @@ where
             Ok(None)
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IpcProtocol, negotiate_server, select_protocol};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    #[test]
+    fn wire_name_for_variants() {
+        assert_eq!(IpcProtocol::JsonRpc.wire_name(), "jsonrpc");
+        assert_eq!(IpcProtocol::Tarpc.wire_name(), "tarpc");
+    }
+
+    #[test]
+    fn parse_accepts_aliases() {
+        for name in ["jsonrpc", "json-rpc", "json_rpc"] {
+            assert_eq!(IpcProtocol::parse(name), Some(IpcProtocol::JsonRpc));
+        }
+        for name in ["tarpc", "binary"] {
+            assert_eq!(IpcProtocol::parse(name), Some(IpcProtocol::Tarpc));
+        }
+    }
+
+    #[test]
+    fn parse_unknown_returns_none() {
+        assert_eq!(IpcProtocol::parse("grpc"), None);
+        assert_eq!(IpcProtocol::parse(""), None);
+    }
+
+    #[test]
+    fn all_supported_contains_both_variants() {
+        let supported = IpcProtocol::all_supported();
+        assert!(supported.contains(&IpcProtocol::Tarpc));
+        assert!(supported.contains(&IpcProtocol::JsonRpc));
+        assert_eq!(supported.len(), 2);
+    }
+
+    #[test]
+    fn select_protocol_prefers_client_order() {
+        let client = [IpcProtocol::JsonRpc, IpcProtocol::Tarpc];
+        let server = [IpcProtocol::Tarpc, IpcProtocol::JsonRpc];
+        assert_eq!(select_protocol(&client, &server), IpcProtocol::JsonRpc);
+
+        let client = [IpcProtocol::Tarpc, IpcProtocol::JsonRpc];
+        assert_eq!(select_protocol(&client, &server), IpcProtocol::Tarpc);
+    }
+
+    #[test]
+    fn select_protocol_falls_back_to_json_rpc() {
+        let client = [IpcProtocol::Tarpc];
+        let server = [IpcProtocol::JsonRpc];
+        assert_eq!(select_protocol(&client, &server), IpcProtocol::JsonRpc);
+    }
+
+    #[test]
+    fn default_is_json_rpc() {
+        assert_eq!(IpcProtocol::default(), IpcProtocol::JsonRpc);
+    }
+
+    #[test]
+    fn display_matches_wire_name() {
+        assert_eq!(IpcProtocol::JsonRpc.to_string(), "jsonrpc");
+        assert_eq!(IpcProtocol::Tarpc.to_string(), "tarpc");
+    }
+
+    #[tokio::test]
+    async fn negotiation_roundtrip_duplex() {
+        let (client, server) = tokio::io::duplex(256);
+        let (mut client, mut server) = (client, server);
+
+        let server_task = tokio::spawn(async move {
+            negotiate_server(&mut server, IpcProtocol::all_supported(), 1000).await
+        });
+
+        client
+            .write_all(b"PROTOCOLS: tarpc,jsonrpc\n")
+            .await
+            .unwrap();
+        client.flush().await.unwrap();
+
+        let mut reader = BufReader::new(&mut client);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert_eq!(line.trim(), "PROTOCOL: tarpc");
+
+        let negotiated = server_task.await.unwrap().unwrap();
+        assert_eq!(negotiated, Some(IpcProtocol::Tarpc));
+    }
+
+    #[tokio::test]
+    async fn negotiation_legacy_client_no_protocols_line() {
+        let (client, server) = tokio::io::duplex(256);
+        let (mut client, mut server) = (client, server);
+
+        let server_task = tokio::spawn(async move {
+            negotiate_server(&mut server, IpcProtocol::all_supported(), 1000).await
+        });
+
+        client.write_all(b"{\"jsonrpc\":\"2.0\"}\n").await.unwrap();
+        client.flush().await.unwrap();
+
+        let negotiated = server_task.await.unwrap().unwrap();
+        assert_eq!(negotiated, None);
     }
 }

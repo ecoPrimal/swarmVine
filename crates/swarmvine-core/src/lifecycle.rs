@@ -98,3 +98,64 @@ pub trait PrimalLifecycle: Send + Sync {
         async { self.stop().await }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PrimalState;
+
+    #[test]
+    fn is_running_only_when_running() {
+        assert!(!PrimalState::Created.is_running());
+        assert!(!PrimalState::Starting.is_running());
+        assert!(PrimalState::Running.is_running());
+        assert!(!PrimalState::Stopping.is_running());
+        assert!(!PrimalState::Stopped.is_running());
+        assert!(!PrimalState::Failed.is_running());
+    }
+
+    #[test]
+    fn can_start_from_created_stopped_failed() {
+        assert!(PrimalState::Created.can_start());
+        assert!(!PrimalState::Starting.can_start());
+        assert!(!PrimalState::Running.can_start());
+        assert!(!PrimalState::Stopping.can_start());
+        assert!(PrimalState::Stopped.can_start());
+        assert!(PrimalState::Failed.can_start());
+    }
+
+    #[test]
+    fn can_stop_only_when_running() {
+        assert!(!PrimalState::Created.can_stop());
+        assert!(!PrimalState::Starting.can_stop());
+        assert!(PrimalState::Running.can_stop());
+        assert!(!PrimalState::Stopping.can_stop());
+        assert!(!PrimalState::Stopped.can_stop());
+        assert!(!PrimalState::Failed.can_stop());
+    }
+
+    #[test]
+    fn display_formats_each_state() {
+        assert_eq!(PrimalState::Created.to_string(), "created");
+        assert_eq!(PrimalState::Starting.to_string(), "starting");
+        assert_eq!(PrimalState::Running.to_string(), "running");
+        assert_eq!(PrimalState::Stopping.to_string(), "stopping");
+        assert_eq!(PrimalState::Stopped.to_string(), "stopped");
+        assert_eq!(PrimalState::Failed.to_string(), "failed");
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        for state in [
+            PrimalState::Created,
+            PrimalState::Starting,
+            PrimalState::Running,
+            PrimalState::Stopping,
+            PrimalState::Stopped,
+            PrimalState::Failed,
+        ] {
+            let json = serde_json::to_string(&state).unwrap();
+            let decoded: PrimalState = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, state);
+        }
+    }
+}

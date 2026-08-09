@@ -102,3 +102,74 @@ pub trait PrimalHealth: Send + Sync {
         self.health_status().is_serving()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{HealthReport, HealthStatus};
+
+    #[test]
+    fn is_healthy_only_for_healthy_variant() {
+        assert!(HealthStatus::Healthy.is_healthy());
+        assert!(
+            !HealthStatus::Degraded {
+                reason: "slow".to_owned()
+            }
+            .is_healthy()
+        );
+        assert!(
+            !HealthStatus::Unhealthy {
+                reason: "down".to_owned()
+            }
+            .is_healthy()
+        );
+        assert!(!HealthStatus::Unknown.is_healthy());
+    }
+
+    #[test]
+    fn is_serving_for_healthy_and_degraded() {
+        assert!(HealthStatus::Healthy.is_serving());
+        assert!(
+            HealthStatus::Degraded {
+                reason: "partial".to_owned()
+            }
+            .is_serving()
+        );
+        assert!(
+            !HealthStatus::Unhealthy {
+                reason: "offline".to_owned()
+            }
+            .is_serving()
+        );
+        assert!(!HealthStatus::Unknown.is_serving());
+    }
+
+    #[test]
+    fn health_report_new_defaults() {
+        let report = HealthReport::new("swarmVine", "0.1.0");
+        assert_eq!(report.name, "swarmVine");
+        assert_eq!(report.version, "0.1.0");
+        assert_eq!(report.status, HealthStatus::Unknown);
+        assert!(report.liveness);
+        assert!(!report.readiness);
+    }
+
+    #[test]
+    fn with_status_sets_readiness_from_serving() {
+        let healthy = HealthReport::new("p", "1").with_status(HealthStatus::Healthy);
+        assert_eq!(healthy.status, HealthStatus::Healthy);
+        assert!(healthy.readiness);
+
+        let degraded = HealthReport::new("p", "1").with_status(HealthStatus::Degraded {
+            reason: "lag".to_owned(),
+        });
+        assert!(degraded.readiness);
+
+        let unhealthy = HealthReport::new("p", "1").with_status(HealthStatus::Unhealthy {
+            reason: "fail".to_owned(),
+        });
+        assert!(!unhealthy.readiness);
+
+        let unknown = HealthReport::new("p", "1").with_status(HealthStatus::Unknown);
+        assert!(!unknown.readiness);
+    }
+}

@@ -16,11 +16,12 @@ pub mod platform_paths;
 pub mod platform_signal;
 pub mod platform_substrate;
 pub mod protocol_negotiation;
+pub mod ribocipher;
 pub mod tarpc_service;
 pub mod transport;
 
 pub use error::{PrimalError, PrimalResult};
-pub use gossip::{GossipEngine, GossipEntry, GossipStats, GossipTopic, IngestResult};
+pub use gossip::{GossipEngine, GossipEntry, GossipStats, GossipTopic, IngestResult, PeerStats};
 pub use health::{HealthReport, HealthStatus, PrimalHealth};
 pub use lifecycle::{PrimalLifecycle, PrimalState};
 
@@ -55,7 +56,8 @@ impl SwarmVinePrimal {
     }
 
     /// Access the gossip engine.
-    pub fn engine(&self) -> &GossipEngine {
+    #[must_use]
+    pub const fn engine(&self) -> &GossipEngine {
         &self.engine
     }
 }
@@ -134,5 +136,36 @@ mod tests {
     async fn test_engine_access() {
         let primal = SwarmVinePrimal::with_node_id("testGate".to_owned());
         assert_eq!(primal.engine().node_id(), "testGate");
+    }
+
+    #[test]
+    fn new_derives_node_id_from_env_or_hostname() {
+        let primal = SwarmVinePrimal::new();
+        assert!(!primal.engine().node_id().is_empty());
+    }
+
+    #[test]
+    fn default_constructs_primal() {
+        let primal = SwarmVinePrimal::default();
+        assert_eq!(primal.state(), PrimalState::Created);
+        assert!(!primal.engine().node_id().is_empty());
+    }
+
+    #[tokio::test]
+    async fn full_lifecycle_create_start_health_stop() {
+        let mut primal = SwarmVinePrimal::with_node_id("lifecycleGate".to_owned());
+        assert_eq!(primal.state(), PrimalState::Created);
+        assert!(!primal.health_status().is_healthy());
+
+        primal.start().await.unwrap();
+        assert_eq!(primal.state(), PrimalState::Running);
+        assert!(primal.health_status().is_healthy());
+
+        let report = primal.health_check().await.unwrap();
+        assert_eq!(report.name, "swarmVine");
+        assert!(report.readiness);
+
+        primal.stop().await.unwrap();
+        assert_eq!(primal.state(), PrimalState::Stopped);
     }
 }

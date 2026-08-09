@@ -5,25 +5,12 @@
 //! - **Phase 3 (G65)**: Protocol negotiation on single socket (tarpc or JSON-RPC)
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use swarmvine_core::protocol_negotiation::{IpcProtocol, negotiate_server};
+use swarmvine_core::ribocipher;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{error, info, warn};
 
-/// Structured transport endpoint — wire-compatible with songbird_types.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "transport")]
-pub enum TransportEndpoint {
-    /// Unix Domain Socket.
-    #[serde(rename = "uds")]
-    Uds { path: String },
-    /// TCP socket.
-    #[serde(rename = "tcp")]
-    Tcp { host: String, port: u16 },
-    /// Mesh relay (not directly bindable, routed via Songbird).
-    #[serde(rename = "mesh_relay")]
-    MeshRelay { peer_id: String, capability: String },
-}
+pub(crate) use swarmvine_core::transport::TransportEndpoint;
 
 /// Resolve the default listen endpoint from ecosystem socket conventions.
 ///
@@ -37,30 +24,14 @@ fn default_endpoint(primal_name: &str, family_id: Option<&str>) -> TransportEndp
         };
     }
 
-    let socket_dir = std::env::var(swarmvine_core::env_keys::BIOMEOS_SOCKET_DIR).unwrap_or_else(|_| {
-        let runtime_dir =
-            std::env::var(swarmvine_core::env_keys::XDG_RUNTIME_DIR).unwrap_or_else(|_| "/tmp".to_owned());
-        format!("{runtime_dir}/biomeos")
-    });
-
-    let filename = match family_id.filter(|id| !id.is_empty() && *id != "default") {
-        Some(fid) => format!("{primal_name}-{fid}.sock"),
-        None => format!("{primal_name}.sock"),
-    };
-
-    TransportEndpoint::Uds {
-        path: std::path::PathBuf::from(&socket_dir)
-            .join(&filename)
-            .to_string_lossy()
-            .into_owned(),
-    }
+    TransportEndpoint::platform_default(primal_name, family_id)
 }
 
 /// Run the server on the given (or default) transport endpoint.
 ///
 /// When `negotiate` is true, uses G65 protocol negotiation to multiplex
 /// tarpc and JSON-RPC on a single socket. Otherwise runs Phase 2 (JSON-RPC only).
-pub async fn run(
+pub(crate) async fn run(
     primal_name: &str,
     family_id: Option<&str>,
     injected_endpoint: Option<&TransportEndpoint>,
@@ -100,13 +71,10 @@ pub async fn run(
                     &announce_family,
                 )
                 .await;
-                crate::announce::register_with_songbird(
-                    &register_name,
-                    &register_endpoint,
-                )
-                .await;
+                crate::announce::register_with_songbird(&register_name, &register_endpoint).await;
             });
 
+            // Phase 2: spawn per-connection handlers with Arc<SwarmVinePrimal> + Arc<MethodGate>.
             loop {
                 tokio::select! {
                     accept = listener.accept() => {
@@ -117,7 +85,7 @@ pub async fn run(
                             handle_connection(stream, primal, &gate).await;
                         }
                     }
-                    _ = swarmvine_core::platform_signal::shutdown_signal() => {
+                    () = swarmvine_core::platform_signal::shutdown_signal() => {
                         info!("graceful shutdown initiated");
                         return Ok(());
                     }
@@ -129,6 +97,7 @@ pub async fn run(
             let listener = tokio::net::TcpListener::bind(&addr).await?;
             info!("Listening on tcp://{addr}");
 
+            // Phase 2: spawn per-connection handlers with Arc<SwarmVinePrimal> + Arc<MethodGate>.
             loop {
                 tokio::select! {
                     accept = listener.accept() => {
@@ -139,7 +108,7 @@ pub async fn run(
                             handle_connection(stream, primal, &gate).await;
                         }
                     }
-                    _ = swarmvine_core::platform_signal::shutdown_signal() => {
+                    () = swarmvine_core::platform_signal::shutdown_signal() => {
                         info!("graceful shutdown initiated");
                         return Ok(());
                     }
@@ -155,13 +124,8 @@ pub async fn run(
     }
 }
 
-/// riboCipher signal bytes (Wave 111 — RIBOCIPHER_TRANSPORT_SIGNAL_STANDARD.md).
-const SIGNAL_CLEAR: u8 = 0xEC;
-const SIGNAL_MITO: u8 = 0xED;
-const SIGNAL_NUCLEAR: u8 = 0xEE;
-
 /// Handle a cross-gate TCP connection (public entry point for gossip listener).
-pub async fn handle_tcp_connection(
+pub(crate) async fn handle_tcp_connection(
     stream: tokio::net::TcpStream,
     primal: &swarmvine_core::SwarmVinePrimal,
     gate: &crate::method_gate::MethodGate,
@@ -187,27 +151,31 @@ async fn handle_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
     }
 
     match first[0] {
-        SIGNAL_CLEAR => {
+        ribocipher::SIGNAL_CLEAR => {
             // riboCipher clear signal — read protocol type
             let mut proto = [0u8; 1];
             if stream.read_exact(&mut proto).await.is_err() {
                 return;
             }
             match proto[0] {
-                0x01 => handle_jsonrpc(BufReader::new(stream), primal, gate).await,
-                0x00 => {
+                ribocipher::PROTOCOL_JSONRPC => {
+                    handle_jsonrpc(BufReader::new(stream), primal, gate).await;
+                }
+                ribocipher::PROTOCOL_HEALTH_PROBE => {
                     // Health probe — respond with empty JSON-RPC success
                     if let Err(e) = tokio::io::AsyncWriteExt::write_all(
                         &mut stream,
                         b"{\"jsonrpc\":\"2.0\",\"result\":\"ok\",\"id\":0}\n",
-                    ).await {
+                    )
+                    .await
+                    {
                         warn!("Probe write error: {e}");
                     }
                 }
                 other => warn!("Unsupported riboCipher protocol type: 0x{other:02X}"),
             }
         }
-        SIGNAL_MITO => {
+        ribocipher::SIGNAL_MITO => {
             // Mito-obfuscated signal — consume 4-byte HMAC tag, route as JSON-RPC
             let mut tag = [0u8; 4];
             if stream.read_exact(&mut tag).await.is_err() {
@@ -215,7 +183,7 @@ async fn handle_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
             }
             handle_jsonrpc(BufReader::new(stream), primal, gate).await;
         }
-        SIGNAL_NUCLEAR => {
+        ribocipher::SIGNAL_NUCLEAR => {
             // Nuclear-sealed signal — consume 6-byte payload, route as JSON-RPC
             let mut payload = [0u8; 6];
             if stream.read_exact(&mut payload).await.is_err() {
@@ -225,11 +193,17 @@ async fn handle_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
         }
         b'{' => {
             // DEPRECATED: unsignalled legacy JSON-RPC (Wave 112 — ERROR level, Wave 113 rejects)
-            error!("DEPRECATED: unsignalled connection — prepend [0xEC, 0x01] for riboCipher");
+            error!(
+                "DEPRECATED: unsignalled connection — prepend [{:#04X}, {:#04X}] for riboCipher",
+                ribocipher::SIGNAL_CLEAR,
+                ribocipher::PROTOCOL_JSONRPC
+            );
             handle_jsonrpc_legacy(stream, primal, gate, b'{').await;
         }
         other => {
-            error!("DEPRECATED: unsignalled connection (first byte 0x{other:02X}) — not yet handled");
+            error!(
+                "DEPRECATED: unsignalled connection (first byte 0x{other:02X}) — not yet handled"
+            );
         }
     }
 }
@@ -251,7 +225,7 @@ async fn handle_jsonrpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>
             Ok(_) => {}
         }
 
-        let response = crate::dispatch::handle_request(line.trim(), primal, gate);
+        let response = crate::dispatch::handle_request(line.trim(), primal, gate).await;
         let writer = reader.get_mut();
         if let Err(e) = writer.write_all(response.as_bytes()).await {
             warn!("Write error: {e}");
@@ -284,7 +258,7 @@ async fn handle_jsonrpc_legacy<S: tokio::io::AsyncRead + tokio::io::AsyncWrite +
         }
         Ok(_) => {}
     }
-    let response = crate::dispatch::handle_request(line.trim(), primal, gate);
+    let response = crate::dispatch::handle_request(line.trim(), primal, gate).await;
     let writer = reader.get_mut();
     if let Err(e) = writer.write_all(response.as_bytes()).await {
         warn!("Write error: {e}");
@@ -304,24 +278,208 @@ async fn handle_jsonrpc_legacy<S: tokio::io::AsyncRead + tokio::io::AsyncWrite +
 /// Reads the client's `PROTOCOLS:` line, selects the best match,
 /// then routes the connection to the appropriate handler.
 /// If no negotiation header arrives (legacy client), falls back to JSON-RPC.
-async fn handle_negotiated_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
+async fn handle_negotiated_connection<
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+>(
     mut stream: S,
     primal: &swarmvine_core::SwarmVinePrimal,
     gate: &crate::method_gate::MethodGate,
 ) {
     let server_supported = IpcProtocol::all_supported();
+    let timeout: u64 = std::env::var(swarmvine_core::env_keys::NEGOTIATE_TIMEOUT_MS)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100);
 
-    match negotiate_server(&mut stream, &server_supported, 100).await {
+    match negotiate_server(&mut stream, server_supported, timeout).await {
         Ok(Some(IpcProtocol::Tarpc)) => {
             info!("G65: tarpc selected — handing off to tarpc handler");
-            crate::tarpc_server::handle_tarpc_stream(stream).await;
+            crate::tarpc_server::handle_tarpc_stream(stream);
         }
-        Ok(Some(IpcProtocol::JsonRpc)) | Ok(None) => {
+        Ok(Some(IpcProtocol::JsonRpc) | None) => {
             handle_jsonrpc(BufReader::new(stream), primal, gate).await;
         }
         Err(e) => {
             warn!("Protocol negotiation error: {e} — falling back to JSON-RPC");
             handle_jsonrpc(BufReader::new(stream), primal, gate).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::method_gate::MethodGate;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    fn make_primal() -> swarmvine_core::SwarmVinePrimal {
+        swarmvine_core::SwarmVinePrimal::with_node_id("connTest".to_owned())
+    }
+
+    fn make_gate() -> MethodGate {
+        MethodGate::permissive()
+    }
+
+    /// Drive `handle_connection` over an in-memory duplex and return the first response line.
+    async fn connection_exchange(prefix: &[u8], request_line: Option<&str>) -> String {
+        let (client, server) = tokio::io::duplex(8192);
+        let primal = make_primal();
+        let gate = make_gate();
+
+        let server_task = tokio::spawn(async move {
+            handle_connection(server, &primal, &gate).await;
+        });
+
+        let mut client = BufReader::new(client);
+        client.write_all(prefix).await.unwrap();
+        if let Some(line) = request_line {
+            client.write_all(line.as_bytes()).await.unwrap();
+        }
+        client.get_mut().shutdown().await.unwrap();
+
+        let mut response = String::new();
+        client.read_line(&mut response).await.unwrap();
+
+        server_task.await.unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn ribocipher_clear_jsonrpc_responds() {
+        let response = connection_exchange(
+            &ribocipher::CLEAR_JSONRPC,
+            Some("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"health.liveness\"}\n"),
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(parsed["result"]["alive"], true);
+    }
+
+    #[tokio::test]
+    async fn legacy_unsignalled_json_responds() {
+        let response = connection_exchange(
+            b"{",
+            Some("\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"health.liveness\"}\n"),
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(parsed["result"]["alive"], true);
+    }
+
+    #[tokio::test]
+    async fn ribocipher_health_probe_returns_ok() {
+        let response = connection_exchange(
+            &[ribocipher::SIGNAL_CLEAR, ribocipher::PROTOCOL_HEALTH_PROBE],
+            None,
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(parsed["result"], "ok");
+        assert_eq!(parsed["id"], 0);
+    }
+
+    #[test]
+    fn default_endpoint_tcp_only_from_env() {
+        temp_env::with_var(
+            swarmvine_core::env_keys::PRIMAL_BIND_MODE,
+            Some("tcp_only"),
+            || {
+                let endpoint = default_endpoint("swarmVine", None);
+                match endpoint {
+                    TransportEndpoint::Tcp { host, port } => {
+                        assert_eq!(host, "127.0.0.1");
+                        assert_eq!(port, 0);
+                    }
+                    other => panic!("expected Tcp endpoint, got {other:?}"),
+                }
+            },
+        );
+    }
+
+    fn mito_prefix() -> Vec<u8> {
+        let mut prefix = vec![ribocipher::SIGNAL_MITO];
+        prefix.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        prefix
+    }
+
+    fn nuclear_prefix() -> Vec<u8> {
+        let mut prefix = vec![ribocipher::SIGNAL_NUCLEAR];
+        prefix.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        prefix
+    }
+
+    #[tokio::test]
+    async fn ribocipher_mito_jsonrpc_responds() {
+        let response = connection_exchange(
+            &mito_prefix(),
+            Some("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"health.liveness\"}\n"),
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(parsed["result"]["alive"], true);
+    }
+
+    #[tokio::test]
+    async fn ribocipher_nuclear_jsonrpc_responds() {
+        let response = connection_exchange(
+            &nuclear_prefix(),
+            Some("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"health.liveness\"}\n"),
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(parsed["result"]["alive"], true);
+    }
+
+    /// Drive `handle_negotiated_connection` over duplex; returns protocol line + first JSON-RPC line.
+    async fn negotiated_exchange(
+        client_prefix: &str,
+        request_line: Option<&str>,
+    ) -> (String, String) {
+        let (client, server) = tokio::io::duplex(8192);
+        let primal = make_primal();
+        let gate = make_gate();
+
+        let server_task = tokio::spawn(async move {
+            handle_negotiated_connection(server, &primal, &gate).await;
+        });
+
+        let mut client = BufReader::new(client);
+        client.write_all(client_prefix.as_bytes()).await.unwrap();
+        client.flush().await.unwrap();
+
+        let mut protocol_line = String::new();
+        if client_prefix.starts_with("PROTOCOLS:") {
+            client.read_line(&mut protocol_line).await.unwrap();
+        }
+
+        if let Some(line) = request_line {
+            client.write_all(line.as_bytes()).await.unwrap();
+            client.flush().await.unwrap();
+        }
+        client.get_mut().shutdown().await.unwrap();
+
+        let mut response = String::new();
+        client.read_line(&mut response).await.unwrap();
+
+        server_task.await.unwrap();
+        (protocol_line, response)
+    }
+
+    #[tokio::test]
+    async fn g65_negotiation_jsonrpc_responds() {
+        let (protocol_line, response) = negotiated_exchange(
+            "PROTOCOLS: jsonrpc\n",
+            Some("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"health.liveness\"}\n"),
+        )
+        .await;
+        assert_eq!(protocol_line.trim(), "PROTOCOL: jsonrpc");
+        let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(parsed["result"]["alive"], true);
+    }
+
+    #[tokio::test]
+    async fn g65_negotiation_tarpc_selects_tarpc() {
+        let (protocol_line, _) = negotiated_exchange("PROTOCOLS: tarpc,jsonrpc\n", None).await;
+        assert_eq!(protocol_line.trim(), "PROTOCOL: tarpc");
     }
 }

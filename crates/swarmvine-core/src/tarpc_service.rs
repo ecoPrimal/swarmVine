@@ -28,21 +28,39 @@ pub trait SwarmVineService {
 
     /// List capabilities (mirrors `capabilities.list`).
     async fn capabilities_list() -> CapabilitiesResponse;
+
+    /// Inject a gossip entry (mirrors `gossip.inject`).
+    async fn gossip_inject(topic: String, key: String, payload: String) -> String;
+
+    /// Query gossip table (mirrors `gossip.query`).
+    async fn gossip_query(topic: String, key_prefix: Option<String>) -> String;
+
+    /// Get gossip statistics (mirrors `gossip.status`).
+    async fn gossip_status() -> String;
+
+    /// Get peer statistics (mirrors `gossip.peers`).
+    async fn gossip_peers() -> String;
 }
 
 /// Response type for `health_check` over tarpc.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HealthCheckResponse {
+    /// Health status string.
     pub status: String,
+    /// Primal name.
     pub primal: String,
+    /// Primal version.
     pub version: String,
 }
 
 /// Response type for `capabilities_list` over tarpc.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CapabilitiesResponse {
+    /// Primal name.
     pub primal: String,
+    /// Primal version.
     pub version: String,
+    /// List of supported methods.
     pub methods: Vec<String>,
 }
 
@@ -56,16 +74,14 @@ pub struct CapabilitiesResponse {
 /// Returns an error if the socket doesn't exist or connection fails.
 pub async fn connect(socket_path: Option<&str>) -> Result<SwarmVineServiceClient, std::io::Error> {
     let default_path = {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_owned());
+        let runtime_dir =
+            std::env::var(crate::env_keys::XDG_RUNTIME_DIR).unwrap_or_else(|_| "/tmp".to_owned());
         format!("{runtime_dir}/biomeos/swarmvine.tarpc.sock")
     };
     let path = socket_path.unwrap_or(&default_path);
 
-    let transport = tarpc::serde_transport::unix::connect(
-        path,
-        tokio_serde::formats::Bincode::default,
-    )
-    .await?;
+    let transport =
+        tarpc::serde_transport::unix::connect(path, tokio_serde::formats::Bincode::default).await?;
 
     Ok(SwarmVineServiceClient::new(tarpc::client::Config::default(), transport).spawn())
 }

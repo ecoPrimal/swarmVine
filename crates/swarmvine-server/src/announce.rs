@@ -12,14 +12,13 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
-const PRIMAL_NAME: &str = "swarmvine";
 const PRIMAL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Announce this primal to biomeOS's Neural API socket.
 ///
 /// On non-Unix platforms, this is a no-op (Neural API uses UDS).
 #[cfg(not(unix))]
-pub async fn announce_to_biomeos(_primal_name: &str, _socket: &Path, _family: &str) {
+pub(crate) async fn announce_to_biomeos(_primal_name: &str, _socket: &Path, _family: &str) {
     info!("biomeOS announce not available on this platform (UDS-only)");
 }
 
@@ -29,7 +28,7 @@ pub async fn announce_to_biomeos(_primal_name: &str, _socket: &Path, _family: &s
 /// a `primal.announce` JSON-RPC call. Logs a warning and returns gracefully
 /// if biomeOS is unreachable.
 #[cfg(unix)]
-pub async fn announce_to_biomeos(primal_name: &str, socket: &Path, family: &str) {
+pub(crate) async fn announce_to_biomeos(primal_name: &str, socket: &Path, family: &str) {
     let Some(neural_socket) = discover_neural_api_socket(family) else {
         info!("biomeOS neural-api socket not found — skipping announce");
         return;
@@ -56,7 +55,7 @@ pub async fn announce_to_biomeos(primal_name: &str, socket: &Path, family: &str)
         Ok(stream) => {
             let mut reader = BufReader::new(stream);
             let writer = reader.get_mut();
-            let msg = format!("{}\n", payload);
+            let msg = format!("{payload}\n");
             if let Err(e) = writer.write_all(msg.as_bytes()).await {
                 warn!("Failed to send primal.announce: {e}");
                 return;
@@ -78,14 +77,14 @@ pub async fn announce_to_biomeos(primal_name: &str, socket: &Path, family: &str)
 #[cfg(unix)]
 fn discover_neural_api_socket(family: &str) -> Option<PathBuf> {
     // Tier 1: explicit env override
-    if let Ok(path) = std::env::var("NEURAL_API_SOCKET") {
+    if let Ok(path) = std::env::var(swarmvine_core::env_keys::NEURAL_API_SOCKET) {
         let p = PathBuf::from(&path);
         if p.exists() {
             return Some(p);
         }
     }
     // Tier 2: XDG_RUNTIME_DIR
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+    if let Ok(runtime_dir) = std::env::var(swarmvine_core::env_keys::XDG_RUNTIME_DIR) {
         let p = PathBuf::from(format!("{runtime_dir}/biomeos/neural-api-{family}.sock"));
         if p.exists() {
             return Some(p);
@@ -103,7 +102,7 @@ fn discover_neural_api_socket(family: &str) -> Option<PathBuf> {
 ///
 /// Register with songBird for capability routing (non-Unix no-op).
 #[cfg(not(unix))]
-pub async fn register_with_songbird(_primal_name: &str, _endpoint_json: &serde_json::Value) {
+pub(crate) async fn register_with_songbird(_primal_name: &str, _endpoint_json: &serde_json::Value) {
     info!("songBird registration not available on this platform (UDS-only)");
 }
 
@@ -112,7 +111,7 @@ pub async fn register_with_songbird(_primal_name: &str, _endpoint_json: &serde_j
 /// This enables `ipc.resolve` — when another primal needs to find us,
 /// songbird will return our endpoint.
 #[cfg(unix)]
-pub async fn register_with_songbird(primal_name: &str, endpoint_json: &serde_json::Value) {
+pub(crate) async fn register_with_songbird(primal_name: &str, endpoint_json: &serde_json::Value) {
     let Some(songbird_socket) = discover_songbird_socket() else {
         info!("Songbird socket not found — skipping ipc.register");
         return;
@@ -134,7 +133,7 @@ pub async fn register_with_songbird(primal_name: &str, endpoint_json: &serde_jso
         Ok(stream) => {
             let mut reader = BufReader::new(stream);
             let writer = reader.get_mut();
-            let msg = format!("{}\n", payload);
+            let msg = format!("{payload}\n");
             if let Err(e) = writer.write_all(msg.as_bytes()).await {
                 warn!("Failed to send ipc.register to songbird: {e}");
                 return;
@@ -153,8 +152,14 @@ pub async fn register_with_songbird(primal_name: &str, endpoint_json: &serde_jso
 
 /// Discover songbird socket via standard biomeOS resolution.
 #[cfg(unix)]
-fn discover_songbird_socket() -> Option<PathBuf> {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+pub(crate) fn discover_songbird_socket() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var(swarmvine_core::env_keys::SONGBIRD_SOCKET) {
+        let p = PathBuf::from(&path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(runtime_dir) = std::env::var(swarmvine_core::env_keys::XDG_RUNTIME_DIR) {
         let p = PathBuf::from(format!("{runtime_dir}/biomeos/songbird.sock"));
         if p.exists() {
             return Some(p);
@@ -168,14 +173,14 @@ fn discover_songbird_socket() -> Option<PathBuf> {
 }
 
 /// Capability domains this primal serves.
-pub fn capabilities() -> &'static [&'static str] {
+pub(crate) const fn capabilities() -> &'static [&'static str] {
     &["gossip"]
 }
 
 /// Composition tiers this primal participates in.
 ///
 /// swarmVine is cross-layer: tower (capabilities), node (data), meta (compute).
-pub fn signal_tiers() -> &'static [&'static str] {
+pub(crate) const fn signal_tiers() -> &'static [&'static str] {
     &["tower", "node", "meta"]
 }
 
@@ -187,4 +192,50 @@ fn cost_hints() -> serde_json::Value {
 /// Latency estimates per capability domain (milliseconds).
 fn latency_estimates() -> serde_json::Value {
     serde_json::json!({ "gossip": 5 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_returns_gossip_domain() {
+        assert_eq!(capabilities(), &["gossip"]);
+    }
+
+    #[test]
+    fn signal_tiers_returns_cross_layer_tiers() {
+        assert_eq!(signal_tiers(), &["tower", "node", "meta"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_songbird_socket_none_when_missing() {
+        let empty_runtime =
+            std::env::temp_dir().join(format!("swarmvine-test-runtime-{}", std::process::id()));
+        std::fs::create_dir_all(&empty_runtime).unwrap();
+        let runtime_dir = empty_runtime.display().to_string();
+
+        let result = temp_env::with_vars(
+            [
+                (
+                    swarmvine_core::env_keys::SONGBIRD_SOCKET,
+                    Some("/nonexistent/swarmvine-test-songbird.sock"),
+                ),
+                (
+                    swarmvine_core::env_keys::XDG_RUNTIME_DIR,
+                    Some(runtime_dir.as_str()),
+                ),
+            ],
+            discover_songbird_socket,
+        );
+
+        let _ = std::fs::remove_dir_all(&empty_runtime);
+
+        if std::path::Path::new("/tmp/biomeos/songbird.sock").exists() {
+            assert!(result.is_some());
+        } else {
+            assert!(result.is_none());
+        }
+    }
 }

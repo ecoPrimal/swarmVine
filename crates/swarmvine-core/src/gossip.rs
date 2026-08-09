@@ -6,11 +6,11 @@
 //! - **Compute**: resource capacity, build queues, inference bandwidth
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Default TTL for gossip entries (max hops before drop).
 const DEFAULT_TTL: u8 = 8;
@@ -71,6 +71,7 @@ pub struct GossipEntry {
 
 impl GossipEntry {
     /// Create a new gossip entry originating from this gate.
+    #[must_use]
     pub fn new(
         topic: GossipTopic,
         key: String,
@@ -96,6 +97,7 @@ impl GossipEntry {
     }
 
     /// Whether this entry has expired.
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -105,7 +107,8 @@ impl GossipEntry {
     }
 
     /// Whether this entry has any hops remaining.
-    pub fn has_hops(&self) -> bool {
+    #[must_use]
+    pub const fn has_hops(&self) -> bool {
         self.ttl > 0
     }
 
@@ -174,8 +177,10 @@ pub struct GossipEngine {
     node_id: String,
     /// Entries indexed by topic → key.
     entries: Arc<RwLock<HashMap<GossipTopic, HashMap<String, GossipEntry>>>>,
-    /// Nonce deduplication set.
-    seen_nonces: Arc<RwLock<Vec<String>>>,
+    /// Nonce deduplication set (O(1) lookup).
+    nonce_set: Arc<RwLock<HashSet<String>>>,
+    /// FIFO order for nonce eviction.
+    nonce_order: Arc<RwLock<VecDeque<String>>>,
     /// Per-peer exchange statistics.
     peer_stats: Arc<RwLock<HashMap<String, PeerStats>>>,
     /// Entries pending forwarding to peers.
@@ -187,6 +192,7 @@ pub struct GossipEngine {
 
 impl GossipEngine {
     /// Create a new gossip engine for the given gate.
+    #[must_use]
     pub fn new(node_id: String) -> Self {
         let mut entries = HashMap::new();
         entries.insert(GossipTopic::Tower, HashMap::new());
@@ -196,7 +202,8 @@ impl GossipEngine {
         Self {
             node_id,
             entries: Arc::new(RwLock::new(entries)),
-            seen_nonces: Arc::new(RwLock::new(Vec::new())),
+            nonce_set: Arc::new(RwLock::new(HashSet::new())),
+            nonce_order: Arc::new(RwLock::new(VecDeque::new())),
             peer_stats: Arc::new(RwLock::new(HashMap::new())),
             forward_queue: Arc::new(RwLock::new(Vec::new())),
             total_ingested: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -205,6 +212,7 @@ impl GossipEngine {
     }
 
     /// Our node identity.
+    #[must_use]
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
@@ -229,8 +237,8 @@ impl GossipEngine {
 
         // Nonce dedup check
         {
-            let nonces = self.seen_nonces.read().await;
-            if nonces.iter().any(|n| n == &entry.nonce) {
+            let nonces = self.nonce_set.read().await;
+            if nonces.contains(&entry.nonce) {
                 if let Some(peer) = from_peer {
                     self.record_rejection(peer).await;
                 }
@@ -252,21 +260,19 @@ impl GossipEngine {
             let mut store = self.entries.write().await;
             let topic_store = store.entry(entry.topic).or_default();
 
-            if topic_store.len() >= MAX_ENTRIES_PER_TOPIC
-                && !topic_store.contains_key(&entry.key)
-            {
+            if topic_store.len() >= MAX_ENTRIES_PER_TOPIC && !topic_store.contains_key(&entry.key) {
                 return IngestResult::AtCapacity;
             }
 
-            let accepted = match topic_store.get(&entry.key) {
+            let result = match topic_store.get(&entry.key) {
                 Some(existing) if existing.version >= entry.version => false,
                 _ => {
                     topic_store.insert(entry.key.clone(), entry.clone());
                     true
                 }
             };
-
-            accepted
+            drop(store);
+            result
         };
 
         if !should_forward {
@@ -278,19 +284,24 @@ impl GossipEngine {
 
         // Record nonce
         {
-            let mut nonces = self.seen_nonces.write().await;
-            nonces.push(entry.nonce.clone());
-            if nonces.len() > MAX_NONCE_HISTORY {
-                let drain_count = nonces.len() - MAX_NONCE_HISTORY;
-                nonces.drain(..drain_count);
+            let mut nonce_set = self.nonce_set.write().await;
+            let mut nonce_order = self.nonce_order.write().await;
+            nonce_set.insert(entry.nonce.clone());
+            nonce_order.push_back(entry.nonce.clone());
+            while nonce_order.len() > MAX_NONCE_HISTORY {
+                if let Some(old) = nonce_order.pop_front() {
+                    nonce_set.remove(&old);
+                }
             }
+            drop(nonce_set);
+            drop(nonce_order);
         }
 
         // Queue for forwarding (if from a peer and has hops remaining)
-        if from_peer.is_some() {
-            if let Some(forward_entry) = entry.for_forwarding() {
-                self.forward_queue.write().await.push(forward_entry);
-            }
+        if from_peer.is_some()
+            && let Some(forward_entry) = entry.for_forwarding()
+        {
+            self.forward_queue.write().await.push(forward_entry);
         }
 
         // Record peer stats
@@ -332,29 +343,21 @@ impl GossipEngine {
     }
 
     /// Query the gossip table by topic and optional key prefix.
-    pub async fn query(
-        &self,
-        topic: GossipTopic,
-        key_prefix: Option<&str>,
-    ) -> Vec<GossipEntry> {
+    pub async fn query(&self, topic: GossipTopic, key_prefix: Option<&str>) -> Vec<GossipEntry> {
         let store = self.entries.read().await;
         let Some(topic_store) = store.get(&topic) else {
             return Vec::new();
         };
 
-        topic_store
+        let entries = topic_store
             .values()
             .filter(|e| {
-                if e.is_expired() {
-                    return false;
-                }
-                match key_prefix {
-                    Some(prefix) => e.key.starts_with(prefix),
-                    None => true,
-                }
+                !e.is_expired() && key_prefix.is_none_or(|prefix| e.key.starts_with(prefix))
             })
             .cloned()
-            .collect()
+            .collect();
+        drop(store);
+        entries
     }
 
     /// Drain the forward queue — returns entries that should be sent to peers.
@@ -380,6 +383,8 @@ impl GossipEngine {
             }
         }
 
+        drop(store);
+
         self.total_evicted
             .fetch_add(total_evicted as u64, std::sync::atomic::Ordering::Relaxed);
 
@@ -388,20 +393,35 @@ impl GossipEngine {
 
     /// Get current gossip table statistics.
     pub async fn stats(&self) -> GossipStats {
-        let store = self.entries.read().await;
-        let nonces = self.seen_nonces.read().await;
-        let peers = self.peer_stats.read().await;
+        let (tower_entries, data_entries, compute_entries) = {
+            let store = self.entries.read().await;
+            let stats = (
+                store.get(&GossipTopic::Tower).map_or(0, HashMap::len),
+                store.get(&GossipTopic::Data).map_or(0, HashMap::len),
+                store.get(&GossipTopic::Compute).map_or(0, HashMap::len),
+            );
+            drop(store);
+            stats
+        };
+        let nonce_history_size = {
+            let nonces = self.nonce_set.read().await;
+            let size = nonces.len();
+            drop(nonces);
+            size
+        };
+        let peer_count = {
+            let peers = self.peer_stats.read().await;
+            let count = peers.len();
+            drop(peers);
+            count
+        };
 
         GossipStats {
-            tower_entries: store
-                .get(&GossipTopic::Tower)
-                .map_or(0, HashMap::len),
-            data_entries: store.get(&GossipTopic::Data).map_or(0, HashMap::len),
-            compute_entries: store
-                .get(&GossipTopic::Compute)
-                .map_or(0, HashMap::len),
-            nonce_history_size: nonces.len(),
-            peer_count: peers.len(),
+            tower_entries,
+            data_entries,
+            compute_entries,
+            nonce_history_size,
+            peer_count,
             total_ingested: self
                 .total_ingested
                 .load(std::sync::atomic::Ordering::Relaxed),
@@ -412,6 +432,10 @@ impl GossipEngine {
     }
 
     /// Get per-peer exchange statistics.
+    ///
+    /// Clones the full map because callers need an owned snapshot and this is
+    /// invoked infrequently (diagnostics / RPC); holding a read lock across
+    /// serialization would be worse.
     pub async fn peer_stats(&self) -> HashMap<String, PeerStats> {
         self.peer_stats.read().await.clone()
     }
@@ -425,12 +449,14 @@ impl GossipEngine {
         let entry = stats.entry(peer.to_owned()).or_default();
         entry.entries_received += 1;
         entry.last_exchange_epoch = now;
+        drop(stats);
     }
 
     async fn record_rejection(&self, peer: &str) {
         let mut stats = self.peer_stats.write().await;
         let entry = stats.entry(peer.to_owned()).or_default();
         entry.entries_rejected += 1;
+        drop(stats);
     }
 
     /// Record that we sent entries to a peer.
@@ -443,25 +469,22 @@ impl GossipEngine {
         let entry = stats.entry(peer.to_owned()).or_default();
         entry.entries_sent += count;
         entry.last_exchange_epoch = now;
+        drop(stats);
     }
 }
 
-/// Generate a random 16-byte nonce as a hex string.
+/// Generate a unique nonce from timestamp, process id, and a global counter.
 fn generate_nonce() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    let mut hasher = DefaultHasher::new();
-    SystemTime::now().hash(&mut hasher);
-    std::process::id().hash(&mut hasher);
-    let h1 = hasher.finish();
-
-    let mut hasher2 = DefaultHasher::new();
-    h1.hash(&mut hasher2);
-    std::thread::current().id().hash(&mut hasher2);
-    let h2 = hasher2.finish();
-
-    format!("{h1:016x}{h2:016x}")
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let ts = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = u64::from(std::process::id());
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{ts:032x}{pid:08x}{seq:08x}")
 }
 
 #[cfg(test)]
@@ -507,9 +530,7 @@ mod tests {
             )
             .await;
 
-        let cap_entries = engine
-            .query(GossipTopic::Tower, Some("capability."))
-            .await;
+        let cap_entries = engine.query(GossipTopic::Tower, Some("capability.")).await;
         assert_eq!(cap_entries.len(), 1);
 
         let all_entries = engine.query(GossipTopic::Tower, None).await;
@@ -595,25 +616,13 @@ mod tests {
     async fn stats_reflect_state() {
         let engine = test_engine();
         engine
-            .inject(
-                GossipTopic::Tower,
-                "t1".to_owned(),
-                serde_json::json!({}),
-            )
+            .inject(GossipTopic::Tower, "t1".to_owned(), serde_json::json!({}))
             .await;
         engine
-            .inject(
-                GossipTopic::Data,
-                "d1".to_owned(),
-                serde_json::json!({}),
-            )
+            .inject(GossipTopic::Data, "d1".to_owned(), serde_json::json!({}))
             .await;
         engine
-            .inject(
-                GossipTopic::Data,
-                "d2".to_owned(),
-                serde_json::json!({}),
-            )
+            .inject(GossipTopic::Data, "d2".to_owned(), serde_json::json!({}))
             .await;
 
         let stats = engine.stats().await;

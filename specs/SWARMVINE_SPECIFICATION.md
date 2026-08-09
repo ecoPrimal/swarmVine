@@ -1,9 +1,9 @@
 # swarmVine — Specification
 
 **Version**: 0.1.0  
-**Date**: August 08, 2026  
-**Status**: ACTIVE — budded from sourDough, core gossip engine  
-**Wave**: 157a  
+**Date**: August 09, 2026  
+**Status**: ACTIVE — vertebrate evolution complete, self-audited  
+**Wave**: 157a VERTEBRATE EVOLUTION  
 **Tower Layer**: Cross-layer (Tower + Data + Compute)
 
 ---
@@ -12,7 +12,7 @@
 
 | Field | Value |
 |-------|-------|
-| Phase | 1 (Budding — sourDough scaffold) |
+| Phase | 1–3 (Core + Cross-gate + skunkBat integration) |
 | Domain | Epidemic gossip propagation across mesh |
 | Position | skunkBat's companion — vine spreads, bat validates |
 | Layers | Tower (capabilities), Data (CAS/braids), Compute (resources/tasks) |
@@ -77,15 +77,15 @@ Entries:
 
 ```rust
 struct GossipEntry {
-    topic: GossipTopic,      // tower | data | compute
-    key: String,             // e.g. "capability.advertise:sporeGate:nestGate"
-    payload: Value,          // topic-specific JSON payload
-    origin_gate: String,     // gate that created this entry
-    nonce: [u8; 16],         // deduplication
-    ttl: u8,                 // remaining hops (default 8)
-    version: u64,            // monotonic version for conflict resolution
-    created_at: SystemTime,  // when the entry was created
-    expires_at: SystemTime,  // when the entry should be evicted
+    topic: GossipTopic,         // tower | data | compute
+    key: String,                // e.g. "capability.advertise:sporeGate:nestGate"
+    payload: serde_json::Value, // topic-specific JSON payload
+    origin_gate: String,        // gate that created this entry
+    nonce: String,              // 48-char hex (timestamp + pid + sequence)
+    ttl: u8,                    // remaining hops (default 8)
+    version: u64,               // monotonic version for conflict resolution
+    created_at_epoch: u64,      // epoch seconds
+    expires_at_epoch: u64,      // epoch seconds (default: +600s)
 }
 ```
 
@@ -149,27 +149,31 @@ methods = [
 
 ## Evolution Path
 
-### Phase 1 (Now): Core gossip engine
-- In-memory gossip table with TTL eviction
-- `gossip.spread` / `gossip.inject` / `gossip.query` methods
-- Same-gate UDS transport
-- Self-announce to biomeOS + songBird
+### Phase 1 (COMPLETE): Core gossip engine
+- In-memory gossip table with TTL eviction and O(1) nonce dedup
+- `gossip.spread` / `gossip.inject` / `gossip.query` / `gossip.status` / `gossip.peers` methods
+- Same-gate UDS transport with riboCipher signal detection
+- Self-announce to biomeOS Neural API + songBird ipc.register
+- Fully async dispatch (zero `block_in_place`)
 
-### Phase 2: Cross-gate propagation
-- Connect to songBird mesh for peer list
-- Forward gossip entries via songBird relay
-- riboCipher `0xED` on cross-gate wire
-- Periodic epidemic sweep (pull from peers on timer)
+### Phase 2 (COMPLETE): Cross-gate propagation
+- songBird `mesh.peers` query for peer discovery
+- Epidemic sweep loop — drains forward queue → pushes to mesh peers via TCP
+- riboCipher clear (`0xEC 0x01`) on cross-gate wire
+- Configurable sweep interval, eviction interval, gossip port
+- Forward queue preserves entries when no peers available
 
-### Phase 3: skunkBat integration
-- Pre-accept validation via `skunkBat.metadata.analyze`
-- Gossip-bomb detection (rate limiting per origin)
-- Lineage verification for origin gate identity
+### Phase 3 (COMPLETE): skunkBat integration
+- Vine-bat pre-accept loop: `gossip.spread` → `metadata.analyze` → accept/reject
+- Graceful degradation when skunkBat unreachable (default allow)
+- riboCipher framing on vine-bat UDS communication
 
-### Phase 4: Domain-specific intelligence
+### Phase 4 (NEXT): Domain-specific intelligence + streaming
+- `gossip.subscribe` streaming (currently returns honest Phase 4 status)
 - Bloom filters for CAS `have` sets
 - Depot manifest diffing for efficient binary distribution
 - Compute scheduling hints for biomeOS graph execution
+- songBird gossip delegation (`mesh.capabilities_announce` → swarmVine tower domain)
 
 ---
 
