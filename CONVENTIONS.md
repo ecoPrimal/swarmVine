@@ -15,7 +15,7 @@ This primal follows the ecoPrimals coding conventions (wateringHole standards).
 - **Transport signals**: `swarmvine_core::ribocipher` — centralized constants, no raw magic bytes
 - **Environment keys**: `swarmvine_core::env_keys` — all env var reads via named constants
 - **Discovery**: Runtime via env/songBird/biomeOS — zero primal-name hardcoding, zero `/tmp` hardcoding
-- **Platform paths**: `platform_paths::runtime_socket_dir()` for all socket resolution — no raw `/tmp/biomeos/`
+- **Platform paths**: `platform_paths::runtime_socket_dir()` — single source of truth for all socket resolution. `/tmp` only in `platform_paths.rs`, zero duplicated fallbacks.
 - **Node identity**: `swarmvine_core::resolve_node_id()` — shared `GATE_ID` → `HOSTNAME` → OS hostname resolution
 - **Self-audit**: `self_audit_rpc_surface_matches_registry` test verifies dispatch matches `capability_registry.toml`
 - **Supply chain**: `cargo-deny` — licenses, bans (ecoBin v3.0), sources enforced
