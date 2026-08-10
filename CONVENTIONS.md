@@ -27,7 +27,7 @@ This primal follows the ecoPrimals coding conventions (wateringHole standards).
 - **tarpc**: Dedicated `.tarpc.sock` with bincode framing (G64 Cephalization)
 - **G65**: Single-socket protocol negotiation (documented tarpc 0.37 limitation)
 - **Windows**: All UDS call sites use `transport.rs` abstraction or `#[cfg(unix)]` gating. tarpc UDS → graceful `Unsupported` on non-Unix. TCP gossip is platform-agnostic. songBird peer discovery uses `connect_transport` (no raw `UnixStream`).
-- **Dependencies**: `hostname` crate only in core (re-exported via `resolve_node_id`), not duplicated in server crate.
+- **Dependencies**: `hostname` only in core, `futures-util` not `futures` umbrella, zero dead deps (G72 Tier 1 clean).
 - **Self-injection**: `endpoint.alive` gossip on startup + periodic refresh — ant colony scout pattern.
 - **Announce payload**: Explicit `protocol`, `tarpc_socket`, `gossip_port` fields for unambiguous biomeOS discovery.
 - **Gossip fallback**: TCP direct → songBird `mesh.relay` when peer unreachable.

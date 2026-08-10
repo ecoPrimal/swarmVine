@@ -25,7 +25,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 tarpc = { workspace = true }
 tokio-serde = { workspace = true }
-futures = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 temp-env = "0.3"

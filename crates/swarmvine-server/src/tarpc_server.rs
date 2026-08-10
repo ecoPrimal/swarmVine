@@ -9,7 +9,7 @@
 
 use anyhow::Result;
 #[cfg(unix)]
-use futures::StreamExt;
+use futures_util::StreamExt;
 use swarmvine_core::tarpc_service::SwarmVineService;
 #[cfg(unix)]
 use tarpc::server::{self, Channel};

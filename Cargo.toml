@@ -35,12 +35,11 @@ tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
 
 # Binary RPC (G64 cephalization — dual-protocol composition)
 tarpc = { version = "0.37", features = ["tokio1", "serde-transport", "serde-transport-bincode", "unix", "tcp"] }
 tokio-serde = { version = "0.9", features = ["bincode"] }
-futures = "0.3"
+futures-util = "0.3"
 
 # Error handling
 thiserror = "2.0"
