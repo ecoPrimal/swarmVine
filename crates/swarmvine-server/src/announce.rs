@@ -89,14 +89,7 @@ fn discover_neural_api_socket(family: &str) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    // Tier 2: XDG_RUNTIME_DIR
-    if let Ok(runtime_dir) = std::env::var(swarmvine_core::env_keys::XDG_RUNTIME_DIR) {
-        let p = PathBuf::from(format!("{runtime_dir}/biomeos/neural-api-{family}.sock"));
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    // Tier 3: platform runtime fallback
+    // Tier 2: platform runtime socket directory (consolidates XDG + platform fallback)
     let p = swarmvine_core::platform_paths::runtime_socket_dir()
         .join(format!("neural-api-{family}.sock"));
     if p.exists() {
@@ -163,12 +156,6 @@ pub(crate) async fn register_with_songbird(primal_name: &str, endpoint_json: &se
 pub(crate) fn discover_songbird_socket() -> Option<PathBuf> {
     if let Ok(path) = std::env::var(swarmvine_core::env_keys::SONGBIRD_SOCKET) {
         let p = PathBuf::from(&path);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    if let Ok(runtime_dir) = std::env::var(swarmvine_core::env_keys::XDG_RUNTIME_DIR) {
-        let p = PathBuf::from(format!("{runtime_dir}/biomeos/songbird.sock"));
         if p.exists() {
             return Some(p);
         }

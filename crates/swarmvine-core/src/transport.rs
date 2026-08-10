@@ -49,11 +49,13 @@ pub enum TransportEndpoint {
 
 impl TransportEndpoint {
     /// Platform default: UDS on Unix, TCP localhost elsewhere.
+    ///
+    /// Uses `platform_paths::runtime_socket_dir()` for consistent socket
+    /// directory resolution (no duplicated `/tmp` fallbacks).
     #[must_use]
     pub fn platform_default(primal_name: &str, family_id: Option<&str>) -> Self {
         if cfg!(unix) {
-            let runtime_dir = std::env::var(crate::env_keys::XDG_RUNTIME_DIR)
-                .unwrap_or_else(|_| "/tmp".to_owned());
+            let socket_dir = crate::platform_paths::runtime_socket_dir();
             let filename = family_id
                 .filter(|id| !id.is_empty() && *id != "default")
                 .map_or_else(
@@ -61,7 +63,7 @@ impl TransportEndpoint {
                     |fid| format!("{primal_name}-{fid}.sock"),
                 );
             Self::Uds {
-                path: format!("{runtime_dir}/biomeos/{filename}"),
+                path: socket_dir.join(&filename).to_string_lossy().into_owned(),
             }
         } else {
             Self::Tcp {

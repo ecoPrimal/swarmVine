@@ -57,7 +57,7 @@ pub(crate) async fn run(
             let announce_family = family_id.unwrap_or("ecoPrimal").to_owned();
             let announce_name = primal_name.to_owned();
             let register_name = primal_name.to_owned();
-            let register_endpoint = serde_json::to_value(&endpoint).unwrap_or_default();
+            let register_endpoint = serde_json::json!(&endpoint);
             tokio::spawn(async move {
                 crate::announce::announce_to_biomeos(
                     &announce_name,

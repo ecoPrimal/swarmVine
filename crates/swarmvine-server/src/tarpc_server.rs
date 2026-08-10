@@ -16,13 +16,14 @@ use tarpc::server::{self, Channel};
 use tracing::{info, warn};
 
 /// tarpc socket path — same convention as JSON-RPC but with `.tarpc.sock` suffix.
+///
+/// Uses `platform_paths::runtime_socket_dir()` for consistent resolution
+/// across all socket paths (no duplicated `/tmp` fallbacks).
 fn tarpc_endpoint(primal_name: &str, family_id: Option<&str>) -> String {
-    let socket_dir =
-        std::env::var(swarmvine_core::env_keys::BIOMEOS_SOCKET_DIR).unwrap_or_else(|_| {
-            let runtime_dir = std::env::var(swarmvine_core::env_keys::XDG_RUNTIME_DIR)
-                .unwrap_or_else(|_| "/tmp".to_owned());
-            format!("{runtime_dir}/biomeos")
-        });
+    let socket_dir = std::env::var(swarmvine_core::env_keys::BIOMEOS_SOCKET_DIR).map_or_else(
+        |_| swarmvine_core::platform_paths::runtime_socket_dir(),
+        std::path::PathBuf::from,
+    );
 
     let filename = family_id
         .filter(|id| !id.is_empty() && *id != "default")
@@ -31,10 +32,7 @@ fn tarpc_endpoint(primal_name: &str, family_id: Option<&str>) -> String {
             |fid| format!("{primal_name}-{fid}.tarpc.sock"),
         );
 
-    std::path::PathBuf::from(&socket_dir)
-        .join(&filename)
-        .to_string_lossy()
-        .into_owned()
+    socket_dir.join(&filename).to_string_lossy().into_owned()
 }
 
 /// Start the tarpc binary RPC listener alongside the JSON-RPC server.
