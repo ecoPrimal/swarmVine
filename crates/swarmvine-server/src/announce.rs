@@ -34,12 +34,18 @@ pub(crate) async fn announce_to_biomeos(primal_name: &str, socket: &Path, family
         return;
     };
 
+    let socket_path = socket.display().to_string();
+    let tarpc_socket_path = socket_path.replace(".sock", ".tarpc.sock");
+
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "primal.announce",
         "params": {
             "primal": primal_name,
-            "socket": socket.display().to_string(),
+            "socket": socket_path,
+            "protocol": "json-rpc",
+            "tarpc_socket": tarpc_socket_path,
+            "gossip_port": gossip_port(),
             "pid": std::process::id(),
             "capabilities": capabilities(),
             "methods": crate::dispatch::METHODS,
@@ -174,6 +180,49 @@ pub(crate) fn discover_songbird_socket() -> Option<PathBuf> {
     None
 }
 
+/// Inject an `endpoint.alive` Tower gossip entry for this gate.
+///
+/// Makes this swarmVine instance discoverable via gossip. The ant colony
+/// needs scouts — this is the first one. Called on startup and periodically
+/// by the eviction loop so the entry stays fresh.
+pub(crate) async fn inject_endpoint_alive(primal: &swarmvine_core::SwarmVinePrimal, port: u16) {
+    let node_id = primal.engine().node_id().to_owned();
+    let key = format!("endpoint.alive:{node_id}");
+    let payload = serde_json::json!({
+        "gate": node_id,
+        "gossip_port": port,
+        "protocol": "json-rpc",
+        "version": PRIMAL_VERSION,
+        "pid": std::process::id(),
+        "capabilities": capabilities(),
+    });
+
+    let result = primal
+        .engine()
+        .inject(swarmvine_core::GossipTopic::Tower, key, payload)
+        .await;
+
+    match result {
+        swarmvine_core::IngestResult::Accepted => {
+            info!(gate = %node_id, "Injected endpoint.alive gossip entry");
+        }
+        swarmvine_core::IngestResult::Duplicate => {
+            // Expected on periodic re-inject; nonce seen before
+        }
+        other => {
+            warn!(gate = %node_id, result = ?other, "endpoint.alive injection unexpected result");
+        }
+    }
+}
+
+/// Cross-gate gossip port (mirrors `spread::gossip_port()`).
+fn gossip_port() -> u16 {
+    std::env::var(swarmvine_core::env_keys::GOSSIP_PORT)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7800)
+}
+
 /// Capability domains this primal serves.
 pub(crate) const fn capabilities() -> &'static [&'static str] {
     &["gossip"]
@@ -237,5 +286,32 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&empty_runtime);
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn inject_endpoint_alive_creates_tower_entry() {
+        let primal = swarmvine_core::SwarmVinePrimal::with_node_id("aliveTestGate".to_owned());
+        swarmvine_core::PrimalLifecycle::start(&mut swarmvine_core::SwarmVinePrimal::with_node_id(
+            "aliveTestGate".to_owned(),
+        ))
+        .await
+        .ok();
+
+        inject_endpoint_alive(&primal, 7800).await;
+
+        let entries = primal
+            .engine()
+            .query(swarmvine_core::GossipTopic::Tower, Some("endpoint.alive:"))
+            .await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, "endpoint.alive:aliveTestGate");
+        assert_eq!(entries[0].payload["gossip_port"], 7800);
+        assert_eq!(entries[0].payload["protocol"], "json-rpc");
+    }
+
+    #[test]
+    fn gossip_port_defaults_to_7800() {
+        let port = temp_env::with_var_unset(swarmvine_core::env_keys::GOSSIP_PORT, gossip_port);
+        assert_eq!(port, 7800);
     }
 }

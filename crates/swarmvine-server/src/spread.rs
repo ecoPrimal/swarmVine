@@ -84,14 +84,26 @@ pub(crate) async fn epidemic_loop(
             tokio::spawn(async move {
                 match spread_to_peer(&addr, &payload).await {
                     Ok(accepted) => {
-                        debug!(peer = %addr, accepted, "Gossip spread delivered");
+                        debug!(peer = %addr, accepted, "Gossip spread delivered via TCP");
                         engine
                             .engine()
                             .record_send(&addr, u64::from(accepted))
                             .await;
                     }
-                    Err(e) => {
-                        warn!(peer = %addr, error = %e, "Gossip spread failed");
+                    Err(tcp_err) => {
+                        debug!(peer = %addr, error = %tcp_err, "TCP spread failed, trying songBird relay");
+                        match relay_via_songbird(&addr, &payload).await {
+                            Ok(accepted) => {
+                                debug!(peer = %addr, accepted, "Gossip spread delivered via songBird relay");
+                                engine
+                                    .engine()
+                                    .record_send(&addr, u64::from(accepted))
+                                    .await;
+                            }
+                            Err(relay_err) => {
+                                warn!(peer = %addr, tcp_error = %tcp_err, relay_error = %relay_err, "Gossip spread failed (TCP + relay)");
+                            }
+                        }
                     }
                 }
             });
@@ -212,6 +224,72 @@ async fn query_songbird_peers() -> Option<Vec<String>> {
 /// Delegate to announce module's discovery logic.
 fn discover_songbird_socket() -> Option<std::path::PathBuf> {
     crate::announce::discover_songbird_socket()
+}
+
+/// Relay a gossip batch through songBird's mesh relay (`:7700`).
+///
+/// Fallback when direct TCP to a peer fails. Sends a `mesh.relay` request
+/// to the local songBird, which forwards it to the target peer's songBird,
+/// which then delivers to the peer's swarmVine JSON-RPC socket.
+async fn relay_via_songbird(peer_addr: &str, payload: &str) -> Result<u32, String> {
+    let songbird_socket = discover_songbird_socket()
+        .ok_or_else(|| "songBird socket not found for relay".to_owned())?;
+
+    let relay_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "mesh.relay",
+        "params": {
+            "target_peer": peer_addr,
+            "target_method": "gossip.spread",
+            "payload": serde_json::from_str::<serde_json::Value>(payload).unwrap_or_default(),
+        },
+        "id": 1,
+    });
+
+    let endpoint = swarmvine_core::transport::TransportEndpoint::Uds {
+        path: songbird_socket.to_string_lossy().into_owned(),
+    };
+    let stream = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        swarmvine_core::transport::connect_transport(&endpoint),
+    )
+    .await
+    .map_err(|_| "Timeout connecting to songBird for relay".to_owned())?
+    .map_err(|e| format!("Cannot connect to songBird for relay: {e}"))?;
+
+    let (rd, mut wr) = tokio::io::split(stream);
+    let mut reader = BufReader::new(rd);
+
+    wr.write_all(&ribocipher::CLEAR_JSONRPC)
+        .await
+        .map_err(|e| format!("Write signal to songBird relay: {e}"))?;
+
+    let msg = format!("{relay_request}\n");
+    wr.write_all(msg.as_bytes())
+        .await
+        .map_err(|e| format!("Write relay payload to songBird: {e}"))?;
+
+    let mut response = String::new();
+    match tokio::time::timeout(READ_TIMEOUT, reader.read_line(&mut response)).await {
+        Ok(Ok(n)) if n > 0 => {}
+        Ok(Ok(_)) => return Err("Empty response from songBird relay".to_owned()),
+        Ok(Err(e)) => return Err(format!("Read error from songBird relay: {e}")),
+        Err(_) => return Err("Timeout reading songBird relay response".to_owned()),
+    }
+
+    let resp: serde_json::Value =
+        serde_json::from_str(&response).map_err(|e| format!("Invalid relay response: {e}"))?;
+
+    if let Some(error) = resp.get("error") {
+        return Err(format!("songBird relay error: {error}"));
+    }
+
+    let accepted = resp
+        .get("result")
+        .and_then(|r| r.get("accepted"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    Ok(u32::try_from(accepted).unwrap_or(u32::MAX))
 }
 
 /// Extract a swarmVine gossip address from a songBird peer entry.
@@ -460,5 +538,34 @@ mod tests {
         let result = spread_to_peer(&format!("127.0.0.1:{port}"), r#"{"test":"payload"}"#).await;
         server.await.unwrap();
         assert_eq!(result.unwrap(), 0);
+    }
+
+    #[test]
+    fn relay_requires_songbird_socket() {
+        // relay_via_songbird's first step is discover_songbird_socket().
+        // When no socket exists (env overrides point at nonexistent paths),
+        // it returns an error before any async work happens.
+        // Verify the error path is correct by checking the discovery dependency.
+        let result = temp_env::with_vars(
+            [
+                (
+                    swarmvine_core::env_keys::SONGBIRD_SOCKET,
+                    Some("/nonexistent/swarmvine-test-songbird.sock"),
+                ),
+                (
+                    swarmvine_core::env_keys::XDG_RUNTIME_DIR,
+                    Some("/nonexistent"),
+                ),
+                (
+                    swarmvine_core::platform_paths::env_overrides::RUNTIME_DIR,
+                    Some("/nonexistent"),
+                ),
+            ],
+            discover_songbird_socket,
+        );
+        assert!(
+            result.is_none(),
+            "relay depends on songBird socket discovery"
+        );
     }
 }

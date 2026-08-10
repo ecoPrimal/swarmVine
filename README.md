@@ -3,14 +3,14 @@
 **Status**: Active — Primal #16
 **License**: AGPL-3.0-or-later (scyBorg Provenance Trio)
 **Purpose**: Epidemic gossip engine for capability, data, and compute propagation across the Tower Atomic mesh
-**Wave**: 157f REFACTOR + COVERAGE
+**Wave**: 157g MESH ENMESHMENT
 
 ---
 
 ## Quick Start
 
 ```bash
-cargo test --workspace          # 134 tests, <1s
+cargo test --workspace          # 137 tests, <1s
 cargo build --release           # LTO + strip → ~2.4 MB
 ./target/release/swarmvine      # local dev — production binary from plasmidBin
 ```
@@ -83,9 +83,11 @@ use transport abstraction (Wave 157e).
 All peer primals discovered at runtime — zero hardcoded primal names or paths in production code.
 
 - **skunkBat** — vine-bat loop: `gossip.spread` → `metadata.analyze` → accept/reject
-- **songBird** — peer discovery via `mesh.peers`, gossip delegation (tower domain)
+- **songBird** — peer discovery via `mesh.peers`, gossip relay fallback via `mesh.relay` when TCP peers unreachable
 - **nestGate/loamSpine** — data gossip consumers (`cas.have`, `braid.head`)
 - **toadStool/coralReef** — compute gossip consumers (`compute.capacity`)
+
+Self-injects `endpoint.alive` gossip on startup and periodically — the ant colony's first scout.
 
 ## Deployment
 
@@ -105,7 +107,7 @@ sourdough scaffold systemd swarmVine --role gate
 | `cargo fmt --check` | Enforced |
 | `cargo clippy -D warnings` (pedantic + nursery) | Enforced |
 | `cargo deny check` | Enforced |
-| `cargo test --workspace` | 134 tests |
+| `cargo test --workspace` | 137 tests |
 | `#![forbid(unsafe_code)]` | Enforced |
 | `warn(missing_docs)` | Enforced |
 

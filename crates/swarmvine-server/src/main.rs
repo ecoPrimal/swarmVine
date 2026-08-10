@@ -85,7 +85,11 @@ async fn main() -> Result<()> {
 
     let primal_arc = Arc::new(primal);
 
-    // Periodic gossip eviction task
+    // Self-inject endpoint.alive — announce to gossip mesh on startup
+    let gossip_port = cli.gossip_port;
+    announce::inject_endpoint_alive(&primal_arc, gossip_port).await;
+
+    // Periodic gossip eviction + endpoint.alive refresh
     let evict_primal = Arc::clone(&primal_arc);
     let evict_interval = cli.evict_interval;
     tokio::spawn(async move {
@@ -96,6 +100,7 @@ async fn main() -> Result<()> {
             if evicted > 0 {
                 tracing::info!(evicted, "Gossip eviction cycle");
             }
+            announce::inject_endpoint_alive(&evict_primal, gossip_port).await;
         }
     });
 
@@ -107,7 +112,6 @@ async fn main() -> Result<()> {
     });
 
     // Cross-gate gossip TCP listener — remote swarmVine instances connect here
-    let gossip_port = cli.gossip_port;
     let gossip_primal = Arc::clone(&primal_arc);
     tokio::spawn(async move {
         if let Err(e) = run_gossip_listener(gossip_port, gossip_primal).await {

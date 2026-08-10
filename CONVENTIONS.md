@@ -9,7 +9,7 @@ This primal follows the ecoPrimals coding conventions (wateringHole standards).
 - **Linting**: Workspace-level `clippy::pedantic` + `clippy::nursery`, `forbid(unsafe_code)`
 - **Docs**: `warn(missing_docs)` — all public items documented, 0 doc warnings
 - **Max file size**: 1000 LOC (largest: `gossip.rs` at 755, `dispatch.rs` at 737)
-- **Test coverage**: 82% line (134 tests, target 90%+)
+- **Test coverage**: 82% line (137 tests, target 90%+)
 - **Domain types**: `domain_types.rs` — BloomFilter, ComputeCapacity, DepotManifest extracted from gossip engine
 - **IPC**: JSON-RPC 2.0 (`domain.verb` naming) + tarpc binary (G64 dual-protocol)
 - **Transport signals**: `swarmvine_core::ribocipher` — centralized constants, no raw magic bytes
@@ -28,6 +28,9 @@ This primal follows the ecoPrimals coding conventions (wateringHole standards).
 - **G65**: Single-socket protocol negotiation (documented tarpc 0.37 limitation)
 - **Windows**: All UDS call sites use `transport.rs` abstraction or `#[cfg(unix)]` gating. tarpc UDS → graceful `Unsupported` on non-Unix. TCP gossip is platform-agnostic. songBird peer discovery uses `connect_transport` (no raw `UnixStream`).
 - **Dependencies**: `hostname` crate only in core (re-exported via `resolve_node_id`), not duplicated in server crate.
+- **Self-injection**: `endpoint.alive` gossip on startup + periodic refresh — ant colony scout pattern.
+- **Announce payload**: Explicit `protocol`, `tarpc_socket`, `gossip_port` fields for unambiguous biomeOS discovery.
+- **Gossip fallback**: TCP direct → songBird `mesh.relay` when peer unreachable.
 
 ## CI Gates
 

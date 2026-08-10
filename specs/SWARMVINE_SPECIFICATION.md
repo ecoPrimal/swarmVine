@@ -3,7 +3,7 @@
 **Version**: 0.1.0  
 **Date**: August 09, 2026  
 **Status**: ACTIVE — vertebrate evolution complete, self-audited  
-**Wave**: 157f REFACTOR + COVERAGE  
+**Wave**: 157g MESH ENMESHMENT  
 **Tower Layer**: Cross-layer (Tower + Data + Compute)
 
 ---
@@ -173,6 +173,9 @@ methods = [
 - `BloomFilter` type for compact CAS `have` set membership (FNV-1a double-hash, serde-friendly)
 - `ComputeCapacity` type for compute scheduling hints (GPU/CPU/memory/queue/inference)
 - `DepotManifest` + `DepotManifestEntry` types for efficient binary distribution gossip
+- `endpoint.alive` self-injection on startup + periodic refresh (ant colony scout pattern)
+- songBird `mesh.relay` fallback when TCP direct to peer fails (cross-gate gossip resilience)
+- `primal.announce` payload includes explicit `protocol`, `tarpc_socket`, `gossip_port` for unambiguous biomeOS discovery
 - **Remaining**: songBird gossip delegation (`mesh.capabilities_announce` → swarmVine tower domain)
 - **Remaining**: tarpc streaming (true push via channel, awaiting tarpc streaming support)
 
