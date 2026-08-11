@@ -10,15 +10,19 @@
 use anyhow::Result;
 #[cfg(unix)]
 use futures_util::StreamExt;
+#[cfg(unix)]
 use swarmvine_core::tarpc_service::SwarmVineService;
 #[cfg(unix)]
 use tarpc::server::{self, Channel};
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(unix)]
+use tracing::warn;
 
 /// tarpc socket path — same convention as JSON-RPC but with `.tarpc.sock` suffix.
 ///
 /// Uses `platform_paths::runtime_socket_dir()` for consistent resolution
 /// across all socket paths (no duplicated `/tmp` fallbacks).
+#[cfg(unix)]
 fn tarpc_endpoint(primal_name: &str, family_id: Option<&str>) -> String {
     let socket_dir = std::env::var(swarmvine_core::env_keys::BIOMEOS_SOCKET_DIR).map_or_else(
         |_| swarmvine_core::platform_paths::runtime_socket_dir(),
@@ -115,11 +119,13 @@ pub(crate) fn handle_tarpc_stream<
 }
 
 /// tarpc service handler — bridges the tarpc trait to the primal implementation.
+#[cfg(unix)]
 #[derive(Clone)]
 struct SwarmVineServiceHandler {
     primal: std::sync::Arc<swarmvine_core::SwarmVinePrimal>,
 }
 
+#[cfg(unix)]
 impl swarmvine_core::tarpc_service::SwarmVineService for SwarmVineServiceHandler {
     async fn health_liveness(self, _: tarpc::context::Context) -> bool {
         use swarmvine_core::PrimalHealth;

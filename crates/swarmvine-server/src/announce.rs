@@ -206,6 +206,7 @@ pub(crate) async fn inject_endpoint_alive(primal: &swarmvine_core::SwarmVinePrim
 }
 
 /// Cross-gate gossip port resolved from env or default.
+#[cfg(unix)]
 fn gossip_port() -> u16 {
     swarmvine_core::env_keys::resolve_gossip_port()
 }
@@ -223,11 +224,13 @@ pub(crate) const fn signal_tiers() -> &'static [&'static str] {
 }
 
 /// Cost hints per capability domain (arbitrary units, lower = cheaper).
+#[cfg(unix)]
 fn cost_hints() -> serde_json::Value {
     serde_json::json!({ "gossip": 1 })
 }
 
 /// Latency estimates per capability domain (milliseconds).
+#[cfg(unix)]
 fn latency_estimates() -> serde_json::Value {
     serde_json::json!({ "gossip": 5 })
 }
