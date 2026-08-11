@@ -13,10 +13,11 @@ This primal follows the ecoPrimals coding conventions (wateringHole standards).
 - **Domain types**: `domain_types.rs` — BloomFilter, ComputeCapacity, DepotManifest extracted from gossip engine
 - **IPC**: JSON-RPC 2.0 (`domain.verb` naming) + tarpc binary (G64 dual-protocol)
 - **Transport signals**: `swarmvine_core::ribocipher` — centralized constants, no raw magic bytes
-- **Environment keys**: `swarmvine_core::env_keys` — all env var reads via named constants
+- **Environment keys**: `swarmvine_core::env_keys` — all env var reads, default values, and socket naming via named constants. `resolve_gossip_port()` is the single source of truth for port resolution (zero duplicate implementations).
 - **Discovery**: Runtime via env/songBird/biomeOS — zero primal-name hardcoding, zero `/tmp` hardcoding
 - **Platform paths**: `platform_paths::runtime_socket_dir()` — single source of truth for all socket resolution. `/tmp` only in `platform_paths.rs`, zero duplicated fallbacks.
-- **Node identity**: `swarmvine_core::resolve_node_id()` — shared `GATE_ID` → `HOSTNAME` → OS hostname resolution
+- **Socket naming**: `env_keys::{SWARMVINE_JSONRPC_SOCK, SWARMVINE_TARPC_SOCK, SONGBIRD_SOCK, NEURAL_API_SOCK_PREFIX}` — named constants, not string literals scattered across files.
+- **Node identity**: `swarmvine_core::resolve_node_id()` — shared `GATE_ID` → `HOSTNAME` → OS hostname resolution. Pure Rust (`/proc/sys/kernel/hostname`, no `hostname` crate).
 - **Self-audit**: `self_audit_rpc_surface_matches_registry` test verifies dispatch matches `capability_registry.toml`
 - **Supply chain**: `cargo-deny` — licenses, bans (ecoBin v3.0), sources enforced
 
@@ -27,7 +28,7 @@ This primal follows the ecoPrimals coding conventions (wateringHole standards).
 - **tarpc**: Dedicated `.tarpc.sock` with bincode framing (G64 Cephalization)
 - **G65**: Single-socket protocol negotiation (documented tarpc 0.37 limitation)
 - **Windows**: All UDS call sites use `transport.rs` abstraction or `#[cfg(unix)]` gating. tarpc UDS → graceful `Unsupported` on non-Unix. TCP gossip is platform-agnostic. songBird peer discovery uses `connect_transport` (no raw `UnixStream`).
-- **Dependencies**: `hostname` only in core, `futures-util` not `futures` umbrella, zero dead deps (G72 Tier 1 clean).
+- **Dependencies**: Zero external deps eliminated by pure Rust (`hostname` → `read_system_hostname`). `futures-util` not `futures` umbrella. Zero dead deps. All casts use `try_from` (G72 Tier 1 clean).
 - **Self-injection**: `endpoint.alive` gossip on startup + periodic refresh — ant colony scout pattern.
 - **Announce payload**: Explicit `protocol`, `tarpc_socket`, `gossip_port` fields for unambiguous biomeOS discovery.
 - **Gossip fallback**: TCP direct → songBird `mesh.relay` when peer unreachable.

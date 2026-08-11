@@ -37,10 +37,12 @@ impl BloomFilter {
         if bit_count == 0 {
             return;
         }
+        // Safe: bit_count derived from Vec::len (always fits u64 on 64-bit).
+        let bit_count_u64 = u64::try_from(bit_count).unwrap_or(u64::MAX);
         let (h1, h2) = double_hash(key);
         for i in 0..u64::from(self.k) {
-            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % (bit_count as u64);
-            let byte_idx = (idx / 8) as usize;
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % bit_count_u64;
+            let byte_idx = usize::try_from(idx / 8).unwrap_or(0);
             self.bits[byte_idx] |= 1 << (idx % 8);
         }
         self.item_count += 1;
@@ -53,10 +55,11 @@ impl BloomFilter {
         if bit_count == 0 {
             return false;
         }
+        let bit_count_u64 = u64::try_from(bit_count).unwrap_or(u64::MAX);
         let (h1, h2) = double_hash(key);
         for i in 0..u64::from(self.k) {
-            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % (bit_count as u64);
-            let byte_idx = (idx / 8) as usize;
+            let idx = (h1.wrapping_add(i.wrapping_mul(h2))) % bit_count_u64;
+            let byte_idx = usize::try_from(idx / 8).unwrap_or(0);
             if self.bits[byte_idx] & (1 << (idx % 8)) == 0 {
                 return false;
             }

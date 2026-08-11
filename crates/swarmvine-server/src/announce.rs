@@ -90,8 +90,10 @@ fn discover_neural_api_socket(family: &str) -> Option<PathBuf> {
         }
     }
     // Tier 2: platform runtime socket directory (consolidates XDG + platform fallback)
-    let p = swarmvine_core::platform_paths::runtime_socket_dir()
-        .join(format!("neural-api-{family}.sock"));
+    let p = swarmvine_core::platform_paths::runtime_socket_dir().join(format!(
+        "{}{family}.sock",
+        swarmvine_core::env_keys::NEURAL_API_SOCK_PREFIX
+    ));
     if p.exists() {
         return Some(p);
     }
@@ -160,7 +162,8 @@ pub(crate) fn discover_songbird_socket() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let p = swarmvine_core::platform_paths::runtime_socket_dir().join("songbird.sock");
+    let p = swarmvine_core::platform_paths::runtime_socket_dir()
+        .join(swarmvine_core::env_keys::SONGBIRD_SOCK);
     if p.exists() {
         return Some(p);
     }
@@ -202,12 +205,9 @@ pub(crate) async fn inject_endpoint_alive(primal: &swarmvine_core::SwarmVinePrim
     }
 }
 
-/// Cross-gate gossip port (mirrors `spread::gossip_port()`).
+/// Cross-gate gossip port resolved from env or default.
 fn gossip_port() -> u16 {
-    std::env::var(swarmvine_core::env_keys::GOSSIP_PORT)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(7800)
+    swarmvine_core::env_keys::resolve_gossip_port()
 }
 
 /// Capability domains this primal serves.

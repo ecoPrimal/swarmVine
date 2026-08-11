@@ -3,7 +3,7 @@
 **Status**: Active — Primal #16
 **License**: AGPL-3.0-or-later (scyBorg Provenance Trio)
 **Purpose**: Epidemic gossip engine for capability, data, and compute propagation across the Tower Atomic mesh
-**Wave**: 157g MESH ENMESHMENT
+**Wave**: 157g STADIAL SHIFT (G72 clean)
 
 ---
 

@@ -13,12 +13,9 @@ use swarmvine_core::ribocipher;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, info, warn};
 
-/// Resolve the gossip port from environment or use the default (7800).
+/// Resolve the gossip port from environment or use the default.
 fn gossip_port() -> u16 {
-    std::env::var(swarmvine_core::env_keys::GOSSIP_PORT)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(7800)
+    swarmvine_core::env_keys::resolve_gossip_port()
 }
 
 /// Connection timeout for peer gossip exchange.

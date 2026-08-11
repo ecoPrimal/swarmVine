@@ -83,7 +83,7 @@ pub struct CapabilitiesResponse {
 #[cfg(unix)]
 pub async fn connect(socket_path: Option<&str>) -> Result<SwarmVineServiceClient, std::io::Error> {
     let default_path = crate::platform_paths::runtime_socket_dir()
-        .join("swarmvine.tarpc.sock")
+        .join(crate::env_keys::SWARMVINE_TARPC_SOCK)
         .to_string_lossy()
         .into_owned();
     let path = socket_path.unwrap_or(&default_path);

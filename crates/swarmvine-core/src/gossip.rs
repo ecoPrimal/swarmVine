@@ -320,26 +320,6 @@ impl GossipEngine {
             return IngestResult::Duplicate;
         }
 
-        // Record nonce and evict oldest if over capacity.
-        // Both locks are needed: set for O(1) contains, order for FIFO eviction.
-        let evict_nonce = {
-            let mut nonce_order = self.nonce_order.write().await;
-            nonce_order.push_back(entry.nonce.clone());
-            if nonce_order.len() > MAX_NONCE_HISTORY {
-                nonce_order.pop_front()
-            } else {
-                None
-            }
-        };
-        {
-            let mut nonce_set = self.nonce_set.write().await;
-            nonce_set.insert(entry.nonce.clone());
-            if let Some(old) = evict_nonce {
-                nonce_set.remove(&old);
-            }
-            drop(nonce_set);
-        }
-
         // Queue for forwarding (if from a peer and has hops remaining)
         if from_peer.is_some()
             && let Some(forward_entry) = entry.for_forwarding()
@@ -355,21 +335,48 @@ impl GossipEngine {
         self.total_ingested
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        // Notify subscribers (best-effort: if no one is listening, this is a no-op).
-        let _ = self.subscription_tx.send(GossipNotification {
-            topic: entry.topic,
-            key: entry.key.clone(),
-            origin_gate: entry.origin_gate.clone(),
-            version: entry.version,
-        });
+        // Destructure entry to avoid clones — entry was already cloned into the store above.
+        let GossipEntry {
+            topic,
+            key,
+            origin_gate,
+            nonce,
+            ttl,
+            version,
+            ..
+        } = entry;
 
         debug!(
-            topic = %entry.topic,
-            key = %entry.key,
-            origin = %entry.origin_gate,
-            ttl = entry.ttl,
+            %topic, %key, origin = %origin_gate, ttl,
             "Gossip entry ingested"
         );
+
+        // Notify subscribers (best-effort: if no one is listening, this is a no-op).
+        let _ = self.subscription_tx.send(GossipNotification {
+            topic,
+            key: key.clone(),
+            origin_gate,
+            version,
+        });
+
+        // Record nonce and evict oldest if over capacity.
+        let evict_nonce = {
+            let mut nonce_order = self.nonce_order.write().await;
+            nonce_order.push_back(nonce.clone());
+            if nonce_order.len() > MAX_NONCE_HISTORY {
+                nonce_order.pop_front()
+            } else {
+                None
+            }
+        };
+        {
+            let mut nonce_set = self.nonce_set.write().await;
+            nonce_set.insert(nonce);
+            if let Some(old) = evict_nonce {
+                nonce_set.remove(&old);
+            }
+            drop(nonce_set);
+        }
 
         IngestResult::Accepted
     }

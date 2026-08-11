@@ -33,16 +33,32 @@ pub use lifecycle::{PrimalLifecycle, PrimalState};
 /// Resolve the gate node identity from environment or system hostname.
 ///
 /// Tiered: `GATE_ID` env → `HOSTNAME` env → OS hostname → `"unknown"`.
+/// Pure Rust: reads `/proc/sys/kernel/hostname` (Linux) or falls back to
+/// `/etc/hostname` — no C FFI needed.
 #[must_use]
 pub fn resolve_node_id() -> String {
     std::env::var("GATE_ID")
         .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| {
-            hostname::get()
-                .ok()
-                .and_then(|h| h.into_string().ok())
-                .unwrap_or_else(|| "unknown".to_owned())
-        })
+        .unwrap_or_else(|_| read_system_hostname().unwrap_or_else(|| "unknown".to_owned()))
+}
+
+/// Read hostname from the OS without external crates.
+fn read_system_hostname() -> Option<String> {
+    // Linux fast path
+    if let Ok(name) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_owned());
+        }
+    }
+    // POSIX fallback
+    if let Ok(name) = std::fs::read_to_string("/etc/hostname") {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_owned());
+        }
+    }
+    None
 }
 
 /// The swarmVine primal.
