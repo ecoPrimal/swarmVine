@@ -3,7 +3,7 @@
 **Status**: Active — Primal #16
 **License**: AGPL-3.0-or-later (scyBorg Provenance Trio)
 **Purpose**: Epidemic gossip engine for capability, data, and compute propagation across the Tower Atomic mesh
-**Wave**: 157g STADIAL SHIFT (G72 clean)
+**Wave**: 157i POST-PANDEMIC CASCADE (G72 clean, MeshRelay shipped, Windows port done)
 
 ---
 
@@ -83,7 +83,7 @@ use transport abstraction (Wave 157e).
 All peer primals discovered at runtime — zero hardcoded primal names or paths in production code.
 
 - **skunkBat** — vine-bat loop: `gossip.spread` → `metadata.analyze` → accept/reject
-- **songBird** — peer discovery via `mesh.peers`, gossip relay fallback via `mesh.relay` when TCP peers unreachable
+- **songBird** — peer discovery via `mesh.peers`, gossip relay via `mesh.relay` when TCP peers unreachable (MeshRelay SHIPPED: relay/inject/spread/subscribe)
 - **nestGate/loamSpine** — data gossip consumers (`cas.have`, `braid.head`)
 - **toadStool/coralReef** — compute gossip consumers (`compute.capacity`)
 
