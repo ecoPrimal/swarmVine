@@ -33,7 +33,7 @@ swarmVine/
 
 ## Capability Wire (Dual-Protocol)
 
-### JSON-RPC on `$XDG_RUNTIME_DIR/biomeos/swarmvine.sock`
+### JSON-RPC on `$XDG_RUNTIME_DIR/biomeos/swarmVine.sock`
 
 | Method | Description |
 |--------|-------------|
@@ -50,7 +50,7 @@ swarmVine/
 | `gossip.status` | Current gossip table statistics |
 | `gossip.peers` | Per-peer exchange statistics |
 
-### tarpc on `$XDG_RUNTIME_DIR/biomeos/swarmvine.tarpc.sock`
+### tarpc on `$XDG_RUNTIME_DIR/biomeos/swarmVine.tarpc.sock`
 
 All gossip methods plus baseline health/capabilities — binary framing via bincode for sub-ms intra-gate composition (G64 Cephalization).
 

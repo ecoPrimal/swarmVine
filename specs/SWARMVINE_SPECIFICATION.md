@@ -1,9 +1,9 @@
 # swarmVine — Specification
 
 **Version**: 0.1.0  
-**Date**: August 09, 2026  
-**Status**: ACTIVE — vertebrate evolution complete, self-audited  
-**Wave**: 157g MESH ENMESHMENT  
+**Date**: August 10, 2026  
+**Status**: ACTIVE — G72 clean, deep debt resolved, lean exemplar  
+**Wave**: 157g STADIAL SHIFT  
 **Tower Layer**: Cross-layer (Tower + Data + Compute)
 
 ---
