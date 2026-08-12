@@ -187,13 +187,12 @@ async fn handle_gossip_inject(
     primal: &swarmvine_core::SwarmVinePrimal,
     params: &serde_json::Value,
 ) -> serde_json::Value {
-    let topic = match params.get("topic").and_then(serde_json::Value::as_str) {
-        Some("tower") => GossipTopic::Tower,
-        Some("data") => GossipTopic::Data,
-        Some("compute") => GossipTopic::Compute,
-        _ => {
-            return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
-        }
+    let Some(topic) = params
+        .get("topic")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<GossipTopic>().ok())
+    else {
+        return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
     };
 
     let key = match params.get("key").and_then(serde_json::Value::as_str) {
@@ -219,13 +218,12 @@ async fn handle_gossip_query(
     primal: &swarmvine_core::SwarmVinePrimal,
     params: &serde_json::Value,
 ) -> serde_json::Value {
-    let topic = match params.get("topic").and_then(serde_json::Value::as_str) {
-        Some("tower") => GossipTopic::Tower,
-        Some("data") => GossipTopic::Data,
-        Some("compute") => GossipTopic::Compute,
-        _ => {
-            return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
-        }
+    let Some(topic) = params
+        .get("topic")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<GossipTopic>().ok())
+    else {
+        return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
     };
 
     let prefix = params.get("key_prefix").and_then(serde_json::Value::as_str);
@@ -266,13 +264,12 @@ async fn handle_gossip_subscribe(
     primal: &swarmvine_core::SwarmVinePrimal,
     params: &serde_json::Value,
 ) -> serde_json::Value {
-    let topic = match params.get("topic").and_then(serde_json::Value::as_str) {
-        Some("tower") => GossipTopic::Tower,
-        Some("data") => GossipTopic::Data,
-        Some("compute") => GossipTopic::Compute,
-        _ => {
-            return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
-        }
+    let Some(topic) = params
+        .get("topic")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<GossipTopic>().ok())
+    else {
+        return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
     };
 
     let prefix = params.get("key_prefix").and_then(serde_json::Value::as_str);

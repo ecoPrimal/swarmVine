@@ -281,12 +281,6 @@ mod tests {
     #[tokio::test]
     async fn inject_endpoint_alive_creates_tower_entry() {
         let primal = swarmvine_core::SwarmVinePrimal::with_node_id("aliveTestGate".to_owned());
-        swarmvine_core::PrimalLifecycle::start(&mut swarmvine_core::SwarmVinePrimal::with_node_id(
-            "aliveTestGate".to_owned(),
-        ))
-        .await
-        .ok();
-
         inject_endpoint_alive(&primal, 7800).await;
 
         let entries = primal

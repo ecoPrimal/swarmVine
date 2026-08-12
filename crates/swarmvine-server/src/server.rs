@@ -242,7 +242,7 @@ async fn handle_jsonrpc_legacy<S: tokio::io::AsyncRead + tokio::io::AsyncWrite +
     let mut line = String::new();
 
     // First iteration: prepend the consumed byte
-    line.push(first_byte as char);
+    line.push(char::from(first_byte));
     match reader.read_line(&mut line).await {
         Ok(0) => return,
         Err(e) => {

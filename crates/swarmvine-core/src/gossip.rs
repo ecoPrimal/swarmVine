@@ -46,6 +46,19 @@ impl std::fmt::Display for GossipTopic {
     }
 }
 
+impl std::str::FromStr for GossipTopic {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "tower" => Ok(Self::Tower),
+            "data" => Ok(Self::Data),
+            "compute" => Ok(Self::Compute),
+            _ => Err(()),
+        }
+    }
+}
+
 /// A single gossip entry propagated through the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GossipEntry {
@@ -266,10 +279,10 @@ impl GossipEngine {
             return IngestResult::Expired;
         }
 
-        if !entry.has_hops() && from_peer.is_some() {
-            if let Some(peer) = from_peer {
-                self.record_rejection(peer).await;
-            }
+        if !entry.has_hops()
+            && let Some(peer) = from_peer
+        {
+            self.record_rejection(peer).await;
             return IngestResult::Expired;
         }
 
@@ -354,7 +367,7 @@ impl GossipEngine {
         // Notify subscribers (best-effort: if no one is listening, this is a no-op).
         let _ = self.subscription_tx.send(GossipNotification {
             topic,
-            key: key.clone(),
+            key,
             origin_gate,
             version,
         });
@@ -541,6 +554,25 @@ mod tests {
 
     fn test_engine() -> GossipEngine {
         GossipEngine::new("testGate".to_owned())
+    }
+
+    #[test]
+    fn gossip_topic_from_str() {
+        assert_eq!("tower".parse::<GossipTopic>(), Ok(GossipTopic::Tower));
+        assert_eq!("data".parse::<GossipTopic>(), Ok(GossipTopic::Data));
+        assert_eq!("compute".parse::<GossipTopic>(), Ok(GossipTopic::Compute));
+        assert!("invalid".parse::<GossipTopic>().is_err());
+        assert!("".parse::<GossipTopic>().is_err());
+        assert!("Tower".parse::<GossipTopic>().is_err());
+    }
+
+    #[test]
+    fn gossip_topic_display_roundtrips_from_str() {
+        for topic in [GossipTopic::Tower, GossipTopic::Data, GossipTopic::Compute] {
+            let display = topic.to_string();
+            let parsed: GossipTopic = display.parse().unwrap();
+            assert_eq!(parsed, topic);
+        }
     }
 
     #[tokio::test]

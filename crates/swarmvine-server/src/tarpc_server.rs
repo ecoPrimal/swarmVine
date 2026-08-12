@@ -170,12 +170,8 @@ impl swarmvine_core::tarpc_service::SwarmVineService for SwarmVineServiceHandler
         key: String,
         payload: String,
     ) -> String {
-        use swarmvine_core::GossipTopic;
-        let topic = match topic.as_str() {
-            "tower" => GossipTopic::Tower,
-            "data" => GossipTopic::Data,
-            "compute" => GossipTopic::Compute,
-            _ => return serde_json::json!({"error": "invalid topic"}).to_string(),
+        let Ok(topic) = topic.parse::<swarmvine_core::GossipTopic>() else {
+            return serde_json::json!({"error": "invalid topic"}).to_string();
         };
         let payload_val: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
         let result = self.primal.engine().inject(topic, key, payload_val).await;
@@ -188,12 +184,8 @@ impl swarmvine_core::tarpc_service::SwarmVineService for SwarmVineServiceHandler
         topic: String,
         key_prefix: Option<String>,
     ) -> String {
-        use swarmvine_core::GossipTopic;
-        let topic = match topic.as_str() {
-            "tower" => GossipTopic::Tower,
-            "data" => GossipTopic::Data,
-            "compute" => GossipTopic::Compute,
-            _ => return serde_json::json!({"error": "invalid topic"}).to_string(),
+        let Ok(topic) = topic.parse::<swarmvine_core::GossipTopic>() else {
+            return serde_json::json!({"error": "invalid topic"}).to_string();
         };
         let entries = self
             .primal
@@ -219,12 +211,8 @@ impl swarmvine_core::tarpc_service::SwarmVineService for SwarmVineServiceHandler
         topic: String,
         key_prefix: Option<String>,
     ) -> String {
-        use swarmvine_core::GossipTopic;
-        let topic = match topic.as_str() {
-            "tower" => GossipTopic::Tower,
-            "data" => GossipTopic::Data,
-            "compute" => GossipTopic::Compute,
-            _ => return serde_json::json!({"error": "invalid topic"}).to_string(),
+        let Ok(topic) = topic.parse::<swarmvine_core::GossipTopic>() else {
+            return serde_json::json!({"error": "invalid topic"}).to_string();
         };
         let entries = self
             .primal
