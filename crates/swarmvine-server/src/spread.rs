@@ -116,7 +116,6 @@ pub(crate) async fn epidemic_loop(
 async fn discover_peers() -> Vec<String> {
     let mut peers = Vec::new();
 
-    // Tier 1: explicit peers from environment
     if let Ok(env_peers) = std::env::var(swarmvine_core::env_keys::SWARMVINE_PEERS) {
         for peer in env_peers.split(',') {
             let trimmed = peer.trim();
@@ -124,14 +123,27 @@ async fn discover_peers() -> Vec<String> {
                 peers.push(trimmed.to_owned());
             }
         }
+        debug!(
+            count = peers.len(),
+            source = "env",
+            "Discovered peers from SWARMVINE_PEERS"
+        );
     }
 
-    // Tier 2: songBird mesh.peers query
     if let Some(songbird_peers) = query_songbird_peers().await {
+        let before = peers.len();
         for addr in songbird_peers {
             if !peers.iter().any(|p| p == &addr) {
                 peers.push(addr);
             }
+        }
+        let added = peers.len() - before;
+        if added > 0 {
+            debug!(
+                count = added,
+                source = "songbird",
+                "Discovered peers from mesh.peers"
+            );
         }
     }
 
@@ -215,7 +227,12 @@ async fn query_songbird_peers() -> Option<Vec<String>> {
         }
     }
 
-    if addrs.is_empty() { None } else { Some(addrs) }
+    if addrs.is_empty() {
+        None
+    } else {
+        debug!(peers = ?addrs, "songBird mesh.peers resolved addresses");
+        Some(addrs)
+    }
 }
 
 /// Delegate to announce module's discovery logic.

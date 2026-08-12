@@ -76,6 +76,14 @@ async fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(swarmvine_core::resolve_node_id);
 
+    if cli.gate_id.is_none() {
+        tracing::warn!(
+            node_id = %node_id,
+            "GATE_ID not set — using hostname as node identity. \
+             Set GATE_ID env or --gate-id for stable mesh identity."
+        );
+    }
+
     let mut primal = swarmvine_core::SwarmVinePrimal::with_node_id(node_id.clone());
     swarmvine_core::PrimalLifecycle::start(&mut primal)
         .await
