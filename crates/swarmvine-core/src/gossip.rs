@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Epidemic gossip engine — core types and in-memory store.
 //!
 //! Three gossip domains:
@@ -5,18 +8,13 @@
 //! - **Data**: CAS availability, braid HEADs, depot manifests, content freshness
 //! - **Compute**: resource capacity, build queues, inference bandwidth
 
-use serde::{Deserialize, Serialize};
+pub use crate::gossip_types::*;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, info};
-
-/// Default TTL for gossip entries (max hops before drop).
-const DEFAULT_TTL: u8 = 8;
-
-/// Default entry lifetime before eviction.
-const DEFAULT_EXPIRY: Duration = Duration::from_secs(600);
 
 /// Maximum entries per topic to prevent memory exhaustion.
 const MAX_ENTRIES_PER_TOPIC: usize = 1024;
@@ -24,188 +22,18 @@ const MAX_ENTRIES_PER_TOPIC: usize = 1024;
 /// Maximum nonce history for deduplication.
 const MAX_NONCE_HISTORY: usize = 4096;
 
-/// Gossip domain — which layer of the ecosystem this entry belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GossipTopic {
-    /// Capability advertisements, topology, reachability.
-    Tower,
-    /// CAS availability, braid HEADs, depot manifests, content freshness.
-    Data,
-    /// Resource capacity, build queues, inference bandwidth.
-    Compute,
-}
-
-impl std::fmt::Display for GossipTopic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Tower => write!(f, "tower"),
-            Self::Data => write!(f, "data"),
-            Self::Compute => write!(f, "compute"),
-        }
-    }
-}
-
-impl std::str::FromStr for GossipTopic {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "tower" => Ok(Self::Tower),
-            "data" => Ok(Self::Data),
-            "compute" => Ok(Self::Compute),
-            _ => Err(()),
-        }
-    }
-}
-
-/// A single gossip entry propagated through the mesh.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GossipEntry {
-    /// Which gossip domain this entry belongs to.
-    pub topic: GossipTopic,
-    /// Unique key within the topic (e.g. `capability.advertise:sporeGate:nestGate`).
-    pub key: String,
-    /// Topic-specific JSON payload.
-    pub payload: serde_json::Value,
-    /// Gate that originally created this entry.
-    pub origin_gate: String,
-    /// Deduplication nonce (16 bytes, hex-encoded for JSON).
-    pub nonce: String,
-    /// Remaining hops before this entry is dropped.
-    pub ttl: u8,
-    /// Monotonic version for conflict resolution (higher wins).
-    pub version: u64,
-    /// When the entry was created (epoch seconds).
-    pub created_at_epoch: u64,
-    /// When the entry should be evicted (epoch seconds).
-    pub expires_at_epoch: u64,
-}
-
-impl GossipEntry {
-    /// Create a new gossip entry originating from this gate.
-    #[must_use]
-    pub fn new(
-        topic: GossipTopic,
-        key: String,
-        payload: serde_json::Value,
-        origin_gate: String,
-    ) -> Self {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let nonce = generate_nonce();
-        Self {
-            topic,
-            key,
-            payload,
-            origin_gate,
-            nonce,
-            ttl: DEFAULT_TTL,
-            version: now,
-            created_at_epoch: now,
-            expires_at_epoch: now + DEFAULT_EXPIRY.as_secs(),
-        }
-    }
-
-    /// Whether this entry has expired.
-    #[must_use]
-    pub fn is_expired(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        now >= self.expires_at_epoch
-    }
-
-    /// Whether this entry has any hops remaining.
-    #[must_use]
-    pub const fn has_hops(&self) -> bool {
-        self.ttl > 0
-    }
-
-    /// Create a forwarding copy with decremented TTL.
-    #[must_use]
-    pub fn for_forwarding(&self) -> Option<Self> {
-        if self.ttl == 0 {
-            return None;
-        }
-        let mut copy = self.clone();
-        copy.ttl -= 1;
-        Some(copy)
-    }
-}
-
-/// Result of attempting to ingest a gossip entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IngestResult {
-    /// Entry accepted and stored (new or updated).
-    Accepted,
-    /// Entry is a duplicate (nonce already seen).
-    Duplicate,
-    /// Entry has expired TTL.
-    Expired,
-    /// Entry failed validation.
-    Rejected,
-    /// Topic store is at capacity.
-    AtCapacity,
-}
-
-/// Per-peer exchange statistics.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PeerStats {
-    /// Total entries received from this peer.
-    pub entries_received: u64,
-    /// Total entries sent to this peer.
-    pub entries_sent: u64,
-    /// Last exchange timestamp (epoch seconds).
-    pub last_exchange_epoch: u64,
-    /// Entries rejected from this peer (duplicates, expired, invalid).
-    pub entries_rejected: u64,
-}
-
-/// Gossip table statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GossipStats {
-    /// Entries per topic.
-    pub tower_entries: usize,
-    /// Entries per topic.
-    pub data_entries: usize,
-    /// Entries per topic.
-    pub compute_entries: usize,
-    /// Total nonces in dedup history.
-    pub nonce_history_size: usize,
-    /// Known gossip peers.
-    pub peer_count: usize,
-    /// Total entries ingested since startup.
-    pub total_ingested: u64,
-    /// Total entries evicted since startup.
-    pub total_evicted: u64,
-}
-
-/// Notification emitted to subscribers when a gossip entry is ingested.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GossipNotification {
-    /// Which topic the entry belongs to.
-    pub topic: GossipTopic,
-    /// The entry key.
-    pub key: String,
-    /// The originating gate.
-    pub origin_gate: String,
-    /// Entry version (monotonic).
-    pub version: u64,
-}
-
 /// Broadcast channel capacity for gossip subscriptions.
 const SUBSCRIPTION_CAPACITY: usize = 256;
+
+type TopicStore = HashMap<Arc<str>, GossipEntry>;
+type GossipTable = HashMap<GossipTopic, TopicStore>;
 
 /// The gossip engine — stores entries, handles dedup, eviction, and forwarding.
 pub struct GossipEngine {
     /// Our gate identity.
     node_id: String,
     /// Entries indexed by topic → key.
-    entries: Arc<RwLock<HashMap<GossipTopic, HashMap<String, GossipEntry>>>>,
+    entries: Arc<RwLock<GossipTable>>,
     /// Nonce deduplication set (O(1) lookup).
     nonce_set: Arc<RwLock<HashSet<String>>>,
     /// FIFO order for nonce eviction.
@@ -255,8 +83,8 @@ impl GossipEngine {
     ///
     /// Returns a receiver that yields a [`GossipNotification`] for every
     /// successfully ingested entry. Subscribers that fall behind by more
-    /// than [`SUBSCRIPTION_CAPACITY`] entries will receive a `Lagged` error
-    /// and can resume from the current position.
+    /// than 256 entries will receive a `Lagged` error and can resume from
+    /// the current position.
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<GossipNotification> {
         self.subscription_tx.subscribe()
@@ -318,7 +146,7 @@ impl GossipEngine {
             let result = match topic_store.get(&entry.key) {
                 Some(existing) if existing.version >= entry.version => false,
                 _ => {
-                    topic_store.insert(entry.key.clone(), entry.clone());
+                    topic_store.insert(Arc::clone(&entry.key), entry.clone());
                     true
                 }
             };
@@ -534,20 +362,6 @@ impl GossipEngine {
     }
 }
 
-/// Generate a unique nonce from timestamp, process id, and a global counter.
-fn generate_nonce() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let ts = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = u64::from(std::process::id());
-    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{ts:032x}{pid:08x}{seq:08x}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,7 +403,7 @@ mod tests {
 
         let entries = engine.query(GossipTopic::Tower, None).await;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].origin_gate, "testGate");
+        assert_eq!(entries[0].origin_gate.as_ref(), "testGate");
     }
 
     #[tokio::test]
@@ -622,9 +436,9 @@ mod tests {
         let engine = test_engine();
         let entry = GossipEntry::new(
             GossipTopic::Data,
-            "cas.have:testGate".to_owned(),
+            "cas.have:testGate",
             serde_json::json!({}),
-            "testGate".to_owned(),
+            "testGate",
         );
 
         let r1 = engine.ingest(entry.clone(), Some("peerA")).await;
@@ -639,9 +453,9 @@ mod tests {
         let engine = test_engine();
         let mut entry = GossipEntry::new(
             GossipTopic::Compute,
-            "compute.capacity:testGate".to_owned(),
+            "compute.capacity:testGate",
             serde_json::json!({}),
-            "testGate".to_owned(),
+            "testGate",
         );
         entry.expires_at_epoch = 0; // expired in the past
 
@@ -655,18 +469,18 @@ mod tests {
 
         let mut old = GossipEntry::new(
             GossipTopic::Tower,
-            "capability.advertise:gate1:primal1".to_owned(),
+            "capability.advertise:gate1:primal1",
             serde_json::json!({"version": "old"}),
-            "gate1".to_owned(),
+            "gate1",
         );
         old.version = 1;
         engine.ingest(old, None).await;
 
         let mut new = GossipEntry::new(
             GossipTopic::Tower,
-            "capability.advertise:gate1:primal1".to_owned(),
+            "capability.advertise:gate1:primal1",
             serde_json::json!({"version": "new"}),
-            "gate1".to_owned(),
+            "gate1",
         );
         new.version = 2;
         engine.ingest(new, None).await;
@@ -681,15 +495,15 @@ mod tests {
         let engine = test_engine();
         let entry = GossipEntry::new(
             GossipTopic::Data,
-            "braid.head:gate1".to_owned(),
+            "braid.head:gate1",
             serde_json::json!({"sha": "abc123"}),
-            "gate1".to_owned(),
+            "gate1",
         );
 
         engine.ingest(entry, Some("gate1")).await;
         let queued = engine.drain_forward_queue().await;
         assert_eq!(queued.len(), 1);
-        assert!(queued[0].ttl < DEFAULT_TTL);
+        assert!(queued[0].ttl < crate::gossip_types::DEFAULT_TTL);
     }
 
     #[tokio::test]
@@ -715,12 +529,8 @@ mod tests {
     #[tokio::test]
     async fn evict_expired_removes_stale() {
         let engine = test_engine();
-        let mut entry = GossipEntry::new(
-            GossipTopic::Tower,
-            "stale".to_owned(),
-            serde_json::json!({}),
-            "gate1".to_owned(),
-        );
+        let mut entry =
+            GossipEntry::new(GossipTopic::Tower, "stale", serde_json::json!({}), "gate1");
         entry.expires_at_epoch = 0;
 
         // Force insert bypassing the ingest expiry check
@@ -729,7 +539,7 @@ mod tests {
             store
                 .entry(GossipTopic::Tower)
                 .or_default()
-                .insert("stale".to_owned(), entry);
+                .insert("stale".into(), entry);
         }
 
         let evicted = engine.evict_expired().await;
@@ -742,12 +552,7 @@ mod tests {
     #[tokio::test]
     async fn peer_stats_tracked() {
         let engine = test_engine();
-        let entry = GossipEntry::new(
-            GossipTopic::Tower,
-            "test".to_owned(),
-            serde_json::json!({}),
-            "gate1".to_owned(),
-        );
+        let entry = GossipEntry::new(GossipTopic::Tower, "test", serde_json::json!({}), "gate1");
 
         engine.ingest(entry, Some("gate1")).await;
 
@@ -773,7 +578,7 @@ mod tests {
         let notification = rx.try_recv().unwrap();
         assert_eq!(notification.topic, GossipTopic::Tower);
         assert!(notification.key.starts_with("capability.advertise"));
-        assert_eq!(notification.origin_gate, "testGate");
+        assert_eq!(notification.origin_gate.as_ref(), "testGate");
     }
 
     #[tokio::test]
@@ -781,14 +586,118 @@ mod tests {
         let engine = test_engine();
         let entry = GossipEntry::new(
             GossipTopic::Data,
-            "cas.have:gate1".to_owned(),
+            "cas.have:gate1",
             serde_json::json!({}),
-            "gate1".to_owned(),
+            "gate1",
         );
 
         engine.ingest(entry.clone(), None).await;
         let mut rx = engine.subscribe();
         engine.ingest(entry, None).await;
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn reject_empty_key() {
+        let engine = test_engine();
+        let mut entry =
+            GossipEntry::new(GossipTopic::Tower, "valid", serde_json::json!({}), "gate1");
+        entry.key = "".into();
+        assert_eq!(
+            engine.ingest(entry, Some("peer1")).await,
+            IngestResult::Rejected
+        );
+    }
+
+    #[tokio::test]
+    async fn reject_control_char_in_key() {
+        let engine = test_engine();
+        let mut entry =
+            GossipEntry::new(GossipTopic::Tower, "valid", serde_json::json!({}), "gate1");
+        entry.key = "bad\u{0001}key".into();
+        assert_eq!(
+            engine.ingest(entry, Some("peer1")).await,
+            IngestResult::Rejected
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_ingest_zero_ttl_rejected() {
+        let engine = test_engine();
+        let mut entry = GossipEntry::new(
+            GossipTopic::Data,
+            "cas.have:gate1",
+            serde_json::json!({}),
+            "gate1",
+        );
+        entry.ttl = 0;
+        assert_eq!(
+            engine.ingest(entry, Some("peer1")).await,
+            IngestResult::Expired
+        );
+    }
+
+    #[tokio::test]
+    async fn record_send_updates_peer_stats() {
+        let engine = test_engine();
+        engine.record_send("peer-remote", 5).await;
+        let stats = engine.peer_stats().await;
+        assert_eq!(stats["peer-remote"].entries_sent, 5);
+    }
+
+    #[tokio::test]
+    async fn duplicate_from_peer_increments_rejection_count() {
+        let engine = test_engine();
+        let entry = GossipEntry::new(
+            GossipTopic::Tower,
+            "topology.reachability:gate1",
+            serde_json::json!({}),
+            "gate1",
+        );
+        engine.ingest(entry.clone(), Some("peer1")).await;
+        engine.ingest(entry, Some("peer1")).await;
+        let stats = engine.peer_stats().await;
+        assert_eq!(stats["peer1"].entries_received, 1);
+        assert_eq!(stats["peer1"].entries_rejected, 1);
+    }
+
+    #[tokio::test]
+    async fn inject_queues_local_forward_entry() {
+        let engine = test_engine();
+        engine
+            .inject(
+                GossipTopic::Compute,
+                "compute.capacity:local".to_owned(),
+                serde_json::json!({}),
+            )
+            .await;
+        let queued = engine.drain_forward_queue().await;
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].ttl, DEFAULT_TTL - 1);
+    }
+
+    #[tokio::test]
+    async fn older_version_rejected_as_duplicate() {
+        let engine = test_engine();
+        let mut newer = GossipEntry::new(
+            GossipTopic::Data,
+            "braid.head:gate1",
+            serde_json::json!({"v": "new"}),
+            "gate1",
+        );
+        newer.version = 10;
+        engine.ingest(newer, None).await;
+
+        let mut older = GossipEntry::new(
+            GossipTopic::Data,
+            "braid.head:gate1",
+            serde_json::json!({"v": "old"}),
+            "gate1",
+        );
+        older.version = 5;
+        assert_eq!(
+            engine.ingest(older, Some("peer1")).await,
+            IngestResult::Duplicate
+        );
     }
 }

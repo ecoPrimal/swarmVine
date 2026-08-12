@@ -1,0 +1,23 @@
+Open RPG Creative License (ORC)
+Version 1.0a — February 15, 2023
+
+This work is licensed under the Open RPG Creative License (ORC).
+
+Licensed Material: swarmVine — epidemic gossip engine for the Tower Atomic mesh.
+Owner: ecoPrimals Project
+
+Reserved Material:
+- The "ecoPrimals", "Tower Atomic", "biomeOS" names and ecosystem identity
+- The scyBorg Provenance Trio licensing model itself
+- Gate identities and primal taxonomy
+
+Expressly Designated Licensed Material:
+- All source code in this repository (also licensed AGPL-3.0-or-later)
+- All protocol specifications and wire format documentation
+- The gossip engine mechanics, epidemic propagation algorithms, and data structures
+
+Notice: This license covers the game/system mechanics of the gossip protocol
+design. Source code is separately and additionally covered by AGPL-3.0-or-later.
+Creative/artistic content is covered by CC-BY-SA-4.0.
+
+Full ORC text: https://www.opengamingfoundation.org/orc-license

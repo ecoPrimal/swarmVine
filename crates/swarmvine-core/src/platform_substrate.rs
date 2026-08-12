@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! G68 Platform Substrate Abstraction — eliminate silicon deism beyond transport.
 //!
 //! Two abstraction layers provided here (L3 device backends are domain-specific):
@@ -48,9 +51,7 @@ fn platform_link_impl(original: &Path, link: &Path) -> io::Result<()> {
 /// Check if a path is a symbolic link.
 #[must_use]
 pub fn is_symlink(path: &Path) -> bool {
-    std::fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
 // ─── L2: Permissions ───────────────────────────────────────────────────────

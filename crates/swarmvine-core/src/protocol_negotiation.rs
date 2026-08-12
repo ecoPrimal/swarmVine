@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! G65 Protocol Negotiation — single-socket protocol selection.
 //!
 //! Enables automatic protocol selection between JSON-RPC and tarpc at connection time.

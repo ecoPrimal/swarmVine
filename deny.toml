@@ -60,7 +60,16 @@ deny = [
     { crate = "cryptoki-sys", wrappers = [] },
     { crate = "ring", wrappers = [], reason = "C crypto — ecosystem uses RustCrypto" },
 ]
-skip = []
+skip = [
+    # tarpc 0.37 pulls rand 0.8 directly while opentelemetry_sdk (via tarpc) uses rand 0.9.
+    # Resolved when tarpc 0.38 unifies on rand 0.9. Track: https://github.com/google/tarpc/issues
+    { crate = "rand@0.8", reason = "tarpc 0.37 transitive — awaiting tarpc 0.38" },
+    { crate = "rand_core@0.6", reason = "tarpc 0.37 transitive" },
+    { crate = "rand_chacha@0.3", reason = "tarpc 0.37 transitive" },
+    { crate = "getrandom@0.2", reason = "tarpc 0.37 transitive" },
+    # syn 2 via tarpc-plugins/educe; syn 3 via clap/serde/thiserror/tokio.
+    { crate = "syn@2", reason = "tarpc macro ecosystem — no fix until tarpc updates" },
+]
 
 [sources]
 unknown-registry = "deny"

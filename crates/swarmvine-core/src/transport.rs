@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! G66 Transport Abstraction — silicon-agnostic IPC.
 //!
 //! Eliminates silicon deism: primals express *what* they connect to (a service,
@@ -232,10 +235,7 @@ impl TransportListener {
         match self {
             #[cfg(unix)]
             Self::Unix(_) => true,
-            Self::Tcp(l) => l
-                .local_addr()
-                .map(|a| a.ip().is_loopback())
-                .unwrap_or(false),
+            Self::Tcp(l) => l.local_addr().is_ok_and(|a| a.ip().is_loopback()),
         }
     }
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Platform-aware directory resolution for primal data storage.
 //!
 //! Resolves config, data, runtime, cache, and log directories per platform

@@ -10,6 +10,10 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "swarmvine_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "swarmvine"
 path = "src/main.rs"
@@ -28,4 +32,5 @@ tokio-serde = { workspace = true }
 futures-util = { workspace = true }
 
 [dev-dependencies]
-temp-env = "0.3"
+temp-env = { version = "0.3", features = ["async_closure"] }
+tempfile = "3"

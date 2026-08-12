@@ -1,9 +1,9 @@
 # swarmVine — Specification
 
 **Version**: 0.1.0  
-**Date**: August 11, 2026  
-**Status**: ACTIVE — G72 clean, MeshRelay upstream shipped, Windows port complete  
-**Wave**: 157i POST-PANDEMIC CASCADE  
+**Date**: August 12, 2026  
+**Status**: ACTIVE — G65 default, zero-copy Arc<str>, 90% coverage, P2 bugs resolved  
+**Wave**: 157k POST-PANDEMIC EVOLUTION  
 **Tower Layer**: Cross-layer (Tower + Data + Compute)
 
 ---
@@ -174,7 +174,7 @@ methods = [
 - `ComputeCapacity` type for compute scheduling hints (GPU/CPU/memory/queue/inference)
 - `DepotManifest` + `DepotManifestEntry` types for efficient binary distribution gossip
 - `endpoint.alive` self-injection on startup + periodic refresh (ant colony scout pattern)
-- songBird `mesh.relay` fallback when TCP direct to peer fails — **upstream MeshRelay SHIPPED** (songBird `0dc82bc`/`9351230`: relay/inject/spread/subscribe)
+- songBird `gossip.relay` fallback when TCP direct to peer fails — **upstream MeshRelay SHIPPED** (songBird `0dc82bc`/`9351230`: relay/inject/spread/subscribe)
 - `primal.announce` payload includes explicit `protocol`, `tarpc_socket`, `gossip_port` for unambiguous biomeOS discovery
 - Windows port: zero cross-compile warnings on linux-gnu, windows-gnu, apple-darwin (all UDS gated, `e5cfacd`)
 - **Remaining**: songBird gossip delegation (`mesh.capabilities_announce` → swarmVine tower domain)

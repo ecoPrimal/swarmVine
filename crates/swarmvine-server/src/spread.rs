@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Epidemic spread — drain forward queue and push to mesh peers.
 //!
 //! Peer discovery is tiered:
@@ -240,9 +243,9 @@ fn discover_songbird_socket() -> Option<std::path::PathBuf> {
     crate::announce::discover_songbird_socket()
 }
 
-/// Relay a gossip batch through songBird's mesh relay (`:7700`).
+/// Relay a gossip batch through songBird's gossip relay.
 ///
-/// Fallback when direct TCP to a peer fails. Sends a `mesh.relay` request
+/// Fallback when direct TCP to a peer fails. Sends a `gossip.relay` request
 /// to the local songBird, which forwards it to the target peer's songBird,
 /// which then delivers to the peer's swarmVine JSON-RPC socket.
 async fn relay_via_songbird(peer_addr: &str, payload: &str) -> Result<u32, String> {
@@ -251,7 +254,7 @@ async fn relay_via_songbird(peer_addr: &str, payload: &str) -> Result<u32, Strin
 
     let relay_request = serde_json::json!({
         "jsonrpc": "2.0",
-        "method": "mesh.relay",
+        "method": "gossip.relay",
         "params": {
             "target_peer": peer_addr,
             "target_method": "gossip.spread",
@@ -581,5 +584,195 @@ mod tests {
             result.is_none(),
             "relay depends on songBird socket discovery"
         );
+    }
+
+    #[test]
+    fn strip_port_ipv4_and_ipv6() {
+        assert_eq!(strip_port("192.168.1.1:7700"), "192.168.1.1");
+        assert_eq!(strip_port("[2001:db8::1]:7700"), "[2001:db8::1]");
+        assert_eq!(strip_port("10.0.0.5"), "10.0.0.5");
+    }
+
+    #[test]
+    fn is_loopback_filters_local_addresses() {
+        assert!(is_loopback("127.0.0.1"));
+        assert!(is_loopback("::1"));
+        assert!(is_loopback("[::1]"));
+        assert!(is_loopback("localhost"));
+        assert!(!is_loopback("192.168.1.1"));
+    }
+
+    #[tokio::test]
+    async fn spread_to_peer_connect_refused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let err = spread_to_peer(&format!("127.0.0.1:{port}"), r#"{"test":"payload"}"#)
+            .await
+            .unwrap_err();
+        assert!(err.contains("TCP connect") || err.contains("Timeout connecting"));
+    }
+
+    #[tokio::test]
+    async fn spread_to_peer_invalid_json_response_returns_zero() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut prefix = [0u8; 2];
+            stream.read_exact(&mut prefix).await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let writer = reader.get_mut();
+            writer.write_all(b"not-json\n").await.unwrap();
+        });
+
+        let result = spread_to_peer(&format!("127.0.0.1:{port}"), r#"{"test":"payload"}"#).await;
+        server.await.unwrap();
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    #[cfg(unix)]
+    fn spawn_mock_songbird(response_line: &str) -> std::path::PathBuf {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let path = std::env::temp_dir().join(format!(
+            "swarmvine-mock-songbird-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let response = response_line.to_owned();
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let (mut rd, mut wr) = tokio::io::split(stream);
+                let mut prefix = [0u8; 2];
+                let _ = rd.read_exact(&mut prefix).await;
+                let mut reader = BufReader::new(rd);
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line).await;
+                if !response.is_empty() {
+                    let _ = wr.write_all(format!("{response}\n").as_bytes()).await;
+                }
+            }
+        });
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn query_songbird_peers_parses_peer_array() {
+        let sock = spawn_mock_songbird(
+            r#"{"jsonrpc":"2.0","result":{"peers":[{"addr":"192.168.4.99:7700"}]},"id":1}"#,
+        );
+
+        temp_env::async_with_vars(
+            [(
+                swarmvine_core::env_keys::SONGBIRD_SOCKET,
+                Some(sock.to_str().unwrap()),
+            )],
+            async {
+                let addrs = query_songbird_peers().await.unwrap();
+                assert!(addrs.contains(&"192.168.4.99:7800".to_owned()));
+            },
+        )
+        .await;
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn query_songbird_peers_parses_flat_object() {
+        let sock = spawn_mock_songbird(
+            r#"{"jsonrpc":"2.0","result":{"westGate":{"addr":"10.13.37.50:7700"}},"id":1}"#,
+        );
+
+        temp_env::async_with_vars(
+            [(
+                swarmvine_core::env_keys::SONGBIRD_SOCKET,
+                Some(sock.to_str().unwrap()),
+            )],
+            async {
+                let addrs = query_songbird_peers().await.unwrap();
+                assert!(addrs.contains(&"10.13.37.50:7800".to_owned()));
+            },
+        )
+        .await;
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relay_via_songbird_returns_accepted_count() {
+        let sock = spawn_mock_songbird(r#"{"jsonrpc":"2.0","result":{"accepted":4},"id":1}"#);
+
+        temp_env::async_with_vars(
+            [(
+                swarmvine_core::env_keys::SONGBIRD_SOCKET,
+                Some(sock.to_str().unwrap()),
+            )],
+            async {
+                let payload = r#"{"jsonrpc":"2.0","method":"gossip.spread","params":{},"id":null}"#;
+                let accepted = relay_via_songbird("10.0.0.1:7800", payload).await.unwrap();
+                assert_eq!(accepted, 4);
+            },
+        )
+        .await;
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relay_via_songbird_error_response() {
+        let sock = spawn_mock_songbird(
+            r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"relay failed"},"id":1}"#,
+        );
+
+        temp_env::async_with_vars(
+            [(
+                swarmvine_core::env_keys::SONGBIRD_SOCKET,
+                Some(sock.to_str().unwrap()),
+            )],
+            async {
+                let payload = r#"{"jsonrpc":"2.0","method":"gossip.spread","params":{},"id":null}"#;
+                let err = relay_via_songbird("10.0.0.1:7800", payload)
+                    .await
+                    .unwrap_err();
+                assert!(err.contains("songBird relay error"));
+            },
+        )
+        .await;
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relay_via_songbird_empty_response_is_error() {
+        let sock = spawn_mock_songbird("");
+
+        temp_env::async_with_vars(
+            [(
+                swarmvine_core::env_keys::SONGBIRD_SOCKET,
+                Some(sock.to_str().unwrap()),
+            )],
+            async {
+                let payload = r#"{"jsonrpc":"2.0","method":"gossip.spread","params":{},"id":null}"#;
+                let err = relay_via_songbird("10.0.0.1:7800", payload)
+                    .await
+                    .unwrap_err();
+                assert!(err.contains("Empty response"));
+            },
+        )
+        .await;
+        let _ = std::fs::remove_file(&sock);
     }
 }

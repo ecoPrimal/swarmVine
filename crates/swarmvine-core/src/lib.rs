@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! # swarmVine Core
 //!
 //! Core library for the swarmVine primal — epidemic gossip engine for
@@ -11,6 +14,7 @@ pub mod domain_types;
 pub mod env_keys;
 pub mod error;
 pub mod gossip;
+mod gossip_types;
 pub mod health;
 pub mod lifecycle;
 pub mod platform_paths;
@@ -21,6 +25,7 @@ pub mod ribocipher;
 pub mod tarpc_service;
 pub mod transport;
 
+pub use bytes::{Bytes, BytesMut};
 pub use domain_types::{
     BloomFilter, CascadeNotification, CascadeResult, ComputeCapacity, DepotFreshness,
     DepotManifest, DepotManifestEntry,
@@ -32,6 +37,7 @@ pub use gossip::{
 };
 pub use health::{HealthReport, HealthStatus, PrimalHealth};
 pub use lifecycle::{PrimalLifecycle, PrimalState};
+pub use transport::TransportEndpoint;
 
 /// Resolve the gate node identity from environment or system hostname.
 ///

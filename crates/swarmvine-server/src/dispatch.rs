@@ -1,8 +1,16 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! JSON-RPC 2.0 method dispatch with gossip engine handlers.
 
 use crate::method_gate::MethodGate;
+use crate::rpc_types::{
+    ParsedRequest, build_request, error_response, parse_request, success_response,
+};
 use swarmvine_core::ribocipher;
 use swarmvine_core::{GossipEntry, GossipTopic, IngestResult, PrimalHealth};
+
+pub(crate) use crate::rpc_types::{METHODS, PRIMAL_NAME, PRIMAL_VERSION};
 
 fn skunkbat_sock_path() -> String {
     std::env::var(swarmvine_core::env_keys::SKUNKBAT_SOCKET).unwrap_or_else(|_| {
@@ -23,51 +31,21 @@ fn vine_bat_enabled() -> bool {
     }
 }
 
-const PRIMAL_NAME: &str = "swarmVine";
-const PRIMAL_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-pub(crate) const METHODS: &[&str] = &[
-    "health.liveness",
-    "health.readiness",
-    "health.check",
-    "capabilities.list",
-    "btsp.negotiate",
-    "primal.announce",
-    "gossip.spread",
-    "gossip.inject",
-    "gossip.query",
-    "gossip.status",
-    "gossip.peers",
-    "gossip.subscribe",
-];
-
 /// Dispatch a JSON-RPC request and return the response string.
 pub(crate) async fn handle_request(
     raw: &str,
     primal: &swarmvine_core::SwarmVinePrimal,
     gate: &MethodGate,
 ) -> String {
-    let req: serde_json::Value = match serde_json::from_str(raw) {
-        Ok(v) => v,
-        Err(_) => return error_response(&serde_json::Value::Null, -32700, "Parse error"),
+    let Ok(ParsedRequest { id, method, params }) = parse_request(raw) else {
+        return error_response(&serde_json::Value::Null, -32700, "Parse error");
     };
 
-    let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
-    let method = req
-        .get("method")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-
-    if let Err(denial) = gate.check(method) {
+    if let Err(denial) = gate.check(&method) {
         return error_response(&id, denial.code, &denial.message);
     }
 
-    let params = req
-        .get("params")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    let result = match method {
+    let result = match method.as_str() {
         "health.liveness" => serde_json::json!({ "alive": true }),
         "health.readiness" => {
             let ready = primal.is_ready();
@@ -122,12 +100,7 @@ pub(crate) async fn handle_request(
         _ => return error_response(&id, -32601, "Method not found"),
     };
 
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": result,
-    })
-    .to_string()
+    success_response(&id, &result)
 }
 
 /// Handle `gossip.spread` — receive gossip entries from mesh peers.
@@ -303,11 +276,10 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
         return true;
     }
 
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "metadata.analyze",
-        "params": {
+    let request = build_request(
+        &serde_json::json!(1),
+        "metadata.analyze",
+        &serde_json::json!({
             "topic": entry.topic,
             "key": entry.key,
             "origin_gate": entry.origin_gate,
@@ -315,8 +287,8 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
             "payload": entry.payload,
             "created_at_epoch": entry.created_at_epoch,
             "expires_at_epoch": entry.expires_at_epoch,
-        },
-    });
+        }),
+    );
 
     let endpoint = swarmvine_core::transport::TransportEndpoint::Uds {
         path: sock_path.clone(),
@@ -374,15 +346,6 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
         };
     }
     true
-}
-
-fn error_response(id: &serde_json::Value, code: i32, message: &str) -> String {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": { "code": code, "message": message },
-    })
-    .to_string()
 }
 
 #[cfg(test)]
@@ -726,6 +689,55 @@ mod tests {
         let primal = make_primal();
         let gate = make_gate();
         let req = r#"{"jsonrpc":"2.0","id":24,"method":"gossip.spread","params":{"from":"peer1","entries":[{"not":"a gossip entry"}]}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["accepted"], 0);
+        assert_eq!(resp["result"]["rejected"], 1);
+    }
+
+    #[tokio::test]
+    async fn enforcing_gate_denies_protected_gossip_inject() {
+        use crate::method_gate::GateMode;
+
+        let primal = make_primal();
+        let gate = MethodGate::new(GateMode::Enforcing);
+        let req = r#"{"jsonrpc":"2.0","id":25,"method":"gossip.inject","params":{"topic":"tower","key":"k"}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["error"]["code"], -32002);
+    }
+
+    #[tokio::test]
+    async fn gossip_spread_batch_entries() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":26,"method":"gossip.spread","params":{"from":"peerBatch","entries":[{"topic":"data","key":"cas.have:batch1","payload":{},"origin_gate":"peerBatch","nonce":"aaaa000000000000bbbb000000000001","ttl":5,"version":1,"created_at_epoch":1723100000,"expires_at_epoch":1923100000},{"topic":"data","key":"cas.have:batch2","payload":{},"origin_gate":"peerBatch","nonce":"aaaa000000000000bbbb000000000002","ttl":5,"version":1,"created_at_epoch":1723100000,"expires_at_epoch":1923100000}]}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["accepted"], 2);
+        assert_eq!(resp["result"]["rejected"], 0);
+    }
+
+    #[tokio::test]
+    async fn gossip_query_with_key_prefix() {
+        let primal = make_primal();
+        let gate = make_gate();
+
+        let inject_req = r#"{"jsonrpc":"2.0","id":27,"method":"gossip.inject","params":{"topic":"tower","key":"capability.advertise:testGate:peer","payload":{}}}"#;
+        let _: serde_json::Value =
+            serde_json::from_str(&handle_request(inject_req, &primal, &gate).await).unwrap();
+
+        let query_req = r#"{"jsonrpc":"2.0","id":28,"method":"gossip.query","params":{"topic":"tower","key_prefix":"capability.advertise"}}"#;
+        let resp: serde_json::Value =
+            serde_json::from_str(&handle_request(query_req, &primal, &gate).await).unwrap();
+        assert_eq!(resp["result"]["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn gossip_spread_expired_entry_rejected() {
+        let primal = make_primal();
+        let gate = make_gate();
+        let req = r#"{"jsonrpc":"2.0","id":29,"method":"gossip.spread","params":{"from":"peer1","entry":{"topic":"data","key":"cas.have:expired","payload":{},"origin_gate":"peer1","nonce":"cccc000000000000dddd000000000001","ttl":5,"version":1,"created_at_epoch":1,"expires_at_epoch":2}}}"#;
         let resp: serde_json::Value =
             serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
         assert_eq!(resp["result"]["accepted"], 0);

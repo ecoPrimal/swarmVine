@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Pre-dispatch capability gate (JH-0 / JH-2 ecosystem standard).
 //!
 //! Classifies every JSON-RPC method as Public or Protected and gates

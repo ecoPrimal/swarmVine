@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Neural API self-announcement (Wave 42 `primal.announce` standard).
 //!
 //! On startup, the primal announces itself to biomeOS's Neural API for
@@ -288,7 +291,7 @@ mod tests {
             .query(swarmvine_core::GossipTopic::Tower, Some("endpoint.alive:"))
             .await;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].key, "endpoint.alive:aliveTestGate");
+        assert_eq!(entries[0].key.as_ref(), "endpoint.alive:aliveTestGate");
         assert_eq!(entries[0].payload["gossip_port"], 7800);
         assert_eq!(entries[0].payload["protocol"], "json-rpc");
     }
@@ -297,5 +300,122 @@ mod tests {
     fn gossip_port_defaults_to_7800() {
         let port = temp_env::with_var_unset(swarmvine_core::env_keys::GOSSIP_PORT, gossip_port);
         assert_eq!(port, 7800);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn announce_to_biomeos_with_mock_socket() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        use tokio::net::UnixListener;
+
+        let sock_path = std::env::temp_dir().join(format!(
+            "swarmvine-neural-mock-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert!(line.contains("primal.announce"));
+            let writer = reader.get_mut();
+            writer
+                .write_all(br#"{"jsonrpc":"2.0","result":{"ok":true},"id":1}"#)
+                .await
+                .unwrap();
+            writer.write_all(b"\n").await.unwrap();
+        });
+
+        temp_env::async_with_vars(
+            [(
+                swarmvine_core::env_keys::NEURAL_API_SOCKET,
+                Some(sock_path.to_str().unwrap()),
+            )],
+            async {
+                announce_to_biomeos(
+                    "swarmvine",
+                    std::path::Path::new("/tmp/swarmvine.sock"),
+                    "testFamily",
+                )
+                .await;
+            },
+        )
+        .await;
+        server.await.unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn register_with_songbird_with_mock_socket() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        use tokio::net::UnixListener;
+
+        let sock_path = std::env::temp_dir().join(format!(
+            "swarmvine-songbird-reg-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert!(line.contains("ipc.register"));
+            let writer = reader.get_mut();
+            writer
+                .write_all(br#"{"jsonrpc":"2.0","result":{"registered":true},"id":1}"#)
+                .await
+                .unwrap();
+            writer.write_all(b"\n").await.unwrap();
+        });
+
+        temp_env::async_with_vars(
+            [(
+                swarmvine_core::env_keys::SONGBIRD_SOCKET,
+                Some(sock_path.to_str().unwrap()),
+            )],
+            async {
+                register_with_songbird(
+                    "swarmvine",
+                    &serde_json::json!({"transport": "uds", "path": "/tmp/swarmvine.sock"}),
+                )
+                .await;
+            },
+        )
+        .await;
+        server.await.unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_neural_api_socket_from_env() {
+        let sock_path = std::env::temp_dir().join(format!(
+            "swarmvine-neural-discover-{}.sock",
+            std::process::id()
+        ));
+        std::fs::write(&sock_path, b"").unwrap();
+
+        let result = temp_env::with_var(
+            swarmvine_core::env_keys::NEURAL_API_SOCKET,
+            Some(sock_path.to_str().unwrap()),
+            || discover_neural_api_socket("testFamily"),
+        );
+        let _ = std::fs::remove_file(&sock_path);
+        assert_eq!(result, Some(sock_path));
     }
 }

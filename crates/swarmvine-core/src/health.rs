@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Health check traits for observability.
 //!
 //! Every primal needs to be observable. This module provides health check

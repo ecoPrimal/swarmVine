@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Transport-injected server with first-byte protocol detection.
 //!
 //! Supports two modes:
@@ -8,7 +11,7 @@ use anyhow::Result;
 use swarmvine_core::protocol_negotiation::{IpcProtocol, negotiate_server};
 use swarmvine_core::ribocipher;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 pub(crate) use swarmvine_core::transport::TransportEndpoint;
 
@@ -29,8 +32,9 @@ fn default_endpoint(primal_name: &str, family_id: Option<&str>) -> TransportEndp
 
 /// Run the server on the given (or default) transport endpoint.
 ///
-/// When `negotiate` is true, uses G65 protocol negotiation to multiplex
-/// tarpc and JSON-RPC on a single socket. Otherwise runs Phase 2 (JSON-RPC only).
+/// When `negotiate` is true (the default), uses G65 protocol negotiation to multiplex
+/// tarpc and JSON-RPC on a single socket. When false (legacy dual-socket mode), runs
+/// Phase 2 JSON-RPC only on the primary socket.
 pub(crate) async fn run(
     primal_name: &str,
     family_id: Option<&str>,
@@ -184,19 +188,18 @@ async fn handle_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
             }
             handle_jsonrpc(BufReader::new(stream), primal, gate).await;
         }
-        b'{' => {
-            // DEPRECATED: unsignalled legacy JSON-RPC (Wave 112 — ERROR level, Wave 113 rejects)
-            error!(
-                "DEPRECATED: unsignalled connection — prepend [{:#04X}, {:#04X}] for riboCipher",
-                ribocipher::SIGNAL_CLEAR,
-                ribocipher::PROTOCOL_JSONRPC
+        first if first.is_ascii_graphic() || first == b' ' => {
+            // Legacy unsignalled JSON-RPC — backward-compatible during rolling deploys.
+            // Peers running pre-riboCipher binaries connect without [0xEC, 0x01] prefix.
+            // Accept gracefully so gossip remains bidirectional during upgrade windows.
+            warn!(
+                "Legacy unsignalled connection (first byte 0x{first:02X}) — \
+                 accepting as JSON-RPC for rolling-deploy compatibility"
             );
-            handle_jsonrpc_legacy(stream, primal, gate, b'{').await;
+            handle_jsonrpc_legacy(stream, primal, gate, first).await;
         }
         other => {
-            error!(
-                "DEPRECATED: unsignalled connection (first byte 0x{other:02X}) — not yet handled"
-            );
+            warn!("Unknown first byte 0x{other:02X} — dropping connection");
         }
     }
 }
@@ -357,6 +360,36 @@ mod tests {
         .await;
         let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
         assert_eq!(parsed["result"]["alive"], true);
+    }
+
+    #[tokio::test]
+    async fn legacy_unsignalled_gossip_spread_accepted() {
+        let spread_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "gossip.spread",
+            "params": {
+                "entries": [{
+                    "topic": "tower",
+                    "key": "endpoint.alive:peerGate",
+                    "payload": {"port": 7800},
+                    "origin_gate": "peerGate",
+                    "nonce": "aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+                    "ttl": 5,
+                    "version": 1,
+                    "created_at_epoch": 1_723_456_789,
+                    "expires_at_epoch": 1_823_456_789
+                }]
+            }
+        });
+        let line = format!("{spread_req}\n");
+        let response = connection_exchange(b"{", Some(&line[1..])).await;
+        let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert!(
+            parsed["result"]["accepted"].as_u64().unwrap_or(0) > 0
+                || parsed["result"]["rejected"].is_u64(),
+            "gossip.spread should process without riboCipher prefix: {parsed}"
+        );
     }
 
     #[tokio::test]

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Domain-specific payload types for gossip entries.
 //!
 //! Phase 4 types that give structure to the three gossip domains:
@@ -142,7 +145,7 @@ pub struct DepotManifest {
 pub struct CascadeNotification {
     /// Which repos were updated (empty = all repos).
     pub repos: Vec<String>,
-    /// Source of the cascade (e.g. "forgejo_webhook", "manual", "quorum_timer").
+    /// Source of the cascade (e.g. "`forgejo_webhook`", "manual", "`quorum_timer`").
     pub source: String,
     /// Forgejo commit SHA that triggered the cascade (if webhook-driven).
     pub trigger_commit: Option<String>,

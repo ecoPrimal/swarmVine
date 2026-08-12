@@ -1,3 +1,15 @@
+scyBorg Provenance Trio — Triple License
+
+This repository is licensed under the scyBorg Provenance Trio:
+
+1. AGPL-3.0-or-later (source code) — see below
+2. ORC 1.0a (protocol mechanics) — see LICENSE-ORC
+3. CC-BY-SA-4.0 (creative/documentation) — see LICENSE-CC-BY-SA
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+───────────────────────────────────────────────────────────────────────────────
+
 Copyright (C) 2026 ecoPrimals Project
 
                     GNU AFFERO GENERAL PUBLIC LICENSE

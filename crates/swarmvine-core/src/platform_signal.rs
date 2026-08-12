@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Platform-aware shutdown signal handling.
 //!
 //! Provides a single `shutdown_signal()` future that resolves when the process
@@ -53,4 +56,29 @@ where
         shutdown_signal().await;
         cleanup().await;
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shutdown_signal, shutdown_signal_named};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn shutdown_signal_future_can_be_created_and_waits() {
+        let pending = tokio::time::timeout(Duration::from_millis(50), shutdown_signal()).await;
+        assert!(
+            pending.is_err(),
+            "shutdown signal should not fire within 50ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_named_future_can_be_created() {
+        let pending =
+            tokio::time::timeout(Duration::from_millis(50), shutdown_signal_named()).await;
+        assert!(
+            pending.is_err(),
+            "named shutdown signal should not fire within 50ms"
+        );
+    }
 }

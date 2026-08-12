@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! tarpc service definition for high-performance binary IPC.
 //!
 //! Dual-protocol architecture (G64 Cephalization):
@@ -105,4 +108,41 @@ pub async fn connect(_socket_path: Option<&str>) -> Result<SwarmVineServiceClien
         std::io::ErrorKind::Unsupported,
         "tarpc UDS transport not available on this platform",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CapabilitiesResponse, HealthCheckResponse};
+
+    #[test]
+    fn health_check_response_serde_roundtrip() {
+        let original = HealthCheckResponse {
+            status: "Healthy".to_owned(),
+            primal: "swarmVine".to_owned(),
+            version: "0.1.0".to_owned(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: HealthCheckResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.status, original.status);
+        assert_eq!(decoded.primal, original.primal);
+        assert_eq!(decoded.version, original.version);
+    }
+
+    #[test]
+    fn capabilities_response_serde_roundtrip() {
+        let original = CapabilitiesResponse {
+            primal: "swarmVine".to_owned(),
+            version: "0.1.0".to_owned(),
+            methods: vec![
+                "health.check".to_owned(),
+                "gossip.inject".to_owned(),
+                "gossip.query".to_owned(),
+            ],
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: CapabilitiesResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.primal, original.primal);
+        assert_eq!(decoded.version, original.version);
+        assert_eq!(decoded.methods, original.methods);
+    }
 }

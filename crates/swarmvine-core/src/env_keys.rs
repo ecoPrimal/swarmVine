@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 ecoPrimals Project
+
 //! Environment variable names and runtime constants used across swarmVine.
 //!
 //! Centralizes literal env var keys and default values so production code
@@ -57,4 +60,40 @@ pub fn resolve_gossip_port() -> u16 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_GOSSIP_PORT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_gossip_port_default() {
+        temp_env::with_var_unset(GOSSIP_PORT, || {
+            assert_eq!(resolve_gossip_port(), 7800);
+        });
+    }
+
+    #[test]
+    fn resolve_gossip_port_from_env() {
+        temp_env::with_var(GOSSIP_PORT, Some("9999"), || {
+            assert_eq!(resolve_gossip_port(), 9999);
+        });
+    }
+
+    #[test]
+    fn resolve_gossip_port_invalid_falls_back() {
+        temp_env::with_var(GOSSIP_PORT, Some("abc"), || {
+            assert_eq!(resolve_gossip_port(), 7800);
+        });
+    }
+
+    #[test]
+    fn constant_values_match_expectations() {
+        assert_eq!(DEFAULT_GOSSIP_PORT, 7800);
+        assert_eq!(SWARMVINE_JSONRPC_SOCK, "swarmVine.sock");
+        assert_eq!(SWARMVINE_TARPC_SOCK, "swarmVine.tarpc.sock");
+        assert_eq!(SONGBIRD_SOCK, "songbird.sock");
+        assert_eq!(NEURAL_API_SOCK_PREFIX, "neural-api-");
+        assert_eq!(GOSSIP_PORT, "GOSSIP_PORT");
+    }
 }
