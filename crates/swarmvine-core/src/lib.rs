@@ -21,7 +21,10 @@ pub mod ribocipher;
 pub mod tarpc_service;
 pub mod transport;
 
-pub use domain_types::{BloomFilter, ComputeCapacity, DepotManifest, DepotManifestEntry};
+pub use domain_types::{
+    BloomFilter, CascadeNotification, CascadeResult, ComputeCapacity, DepotFreshness,
+    DepotManifest, DepotManifestEntry,
+};
 pub use error::{PrimalError, PrimalResult};
 pub use gossip::{
     GossipEngine, GossipEntry, GossipNotification, GossipStats, GossipTopic, IngestResult,

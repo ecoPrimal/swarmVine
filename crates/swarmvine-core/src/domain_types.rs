@@ -129,6 +129,71 @@ pub struct DepotManifest {
     pub entries: Vec<DepotManifestEntry>,
 }
 
+/// Cascade notification payload (Data domain: `cascade.notify`).
+///
+/// Injected by the foreman gate (sporeGate) after a Forgejo push or
+/// manual cascade trigger. Gates that subscribe to the Data topic
+/// watch for `cascade.notify:*` keys and autonomously pull from the
+/// outer membrane (primals.eco / git.primals.eco).
+///
+/// Key convention: `cascade.notify:{gate}` for targeted, or
+/// `cascade.notify:all` for fleet-wide.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CascadeNotification {
+    /// Which repos were updated (empty = all repos).
+    pub repos: Vec<String>,
+    /// Source of the cascade (e.g. "forgejo_webhook", "manual", "quorum_timer").
+    pub source: String,
+    /// Forgejo commit SHA that triggered the cascade (if webhook-driven).
+    pub trigger_commit: Option<String>,
+    /// Gate that initiated the cascade notification.
+    pub foreman_gate: String,
+    /// Wave identifier for tracking.
+    pub wave: Option<String>,
+}
+
+/// Cascade result payload (Data domain: `cascade.result`).
+///
+/// Injected by each gate after completing its autonomous cascade pull.
+/// The foreman aggregates these to track fleet-wide parity.
+///
+/// Key convention: `cascade.result:{gate}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CascadeResult {
+    /// Gate that completed the cascade.
+    pub gate: String,
+    /// Number of repos successfully synced.
+    pub synced: u32,
+    /// Number of repos that failed to sync.
+    pub failed: u32,
+    /// Total repos in this gate's manifest.
+    pub total: u32,
+    /// Repos that are stale (source drift from depot).
+    pub stale_repos: Vec<String>,
+    /// Duration of the cascade in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Depot freshness notification (Data domain: `depot.freshness`).
+///
+/// Injected after a gate rebuilds or syncs its depot. Other gates
+/// can watch for these to know when fresh binaries are available.
+///
+/// Key convention: `depot.freshness:{gate}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepotFreshness {
+    /// Gate whose depot was updated.
+    pub gate: String,
+    /// Number of current (non-stale) binaries.
+    pub current: u32,
+    /// Number of stale binaries.
+    pub stale: u32,
+    /// Total binaries in depot.
+    pub total: u32,
+    /// Architectures available.
+    pub architectures: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +261,73 @@ mod tests {
         assert_eq!(decoded.gate, "sporeGate");
         assert_eq!(decoded.entries.len(), 1);
         assert_eq!(decoded.entries[0].primal, "swarmvine");
+    }
+
+    #[test]
+    fn cascade_notification_serde() {
+        let notif = CascadeNotification {
+            repos: vec!["songBird".to_owned(), "bearDog".to_owned()],
+            source: "forgejo_webhook".to_owned(),
+            trigger_commit: Some("abc123def".to_owned()),
+            foreman_gate: "sporeGate".to_owned(),
+            wave: Some("157j".to_owned()),
+        };
+        let json = serde_json::to_string(&notif).unwrap();
+        let decoded: CascadeNotification = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.foreman_gate, "sporeGate");
+        assert_eq!(decoded.repos.len(), 2);
+        assert_eq!(decoded.source, "forgejo_webhook");
+        assert_eq!(decoded.trigger_commit.as_deref(), Some("abc123def"));
+    }
+
+    #[test]
+    fn cascade_notification_fleet_wide() {
+        let notif = CascadeNotification {
+            repos: vec![],
+            source: "manual".to_owned(),
+            trigger_commit: None,
+            foreman_gate: "sporeGate".to_owned(),
+            wave: None,
+        };
+        let json = serde_json::to_string(&notif).unwrap();
+        let decoded: CascadeNotification = serde_json::from_str(&json).unwrap();
+        assert!(decoded.repos.is_empty());
+        assert!(decoded.trigger_commit.is_none());
+    }
+
+    #[test]
+    fn cascade_result_serde() {
+        let result = CascadeResult {
+            gate: "eastGate".to_owned(),
+            synced: 15,
+            failed: 0,
+            total: 17,
+            stale_repos: vec!["biomeos".to_owned()],
+            duration_ms: 4200,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let decoded: CascadeResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.gate, "eastGate");
+        assert_eq!(decoded.synced, 15);
+        assert_eq!(decoded.stale_repos, vec!["biomeos"]);
+    }
+
+    #[test]
+    fn depot_freshness_serde() {
+        let freshness = DepotFreshness {
+            gate: "sporeGate".to_owned(),
+            current: 13,
+            stale: 0,
+            total: 13,
+            architectures: vec![
+                "x86_64-unknown-linux-musl".to_owned(),
+                "x86_64-unknown-linux-gnu".to_owned(),
+            ],
+        };
+        let json = serde_json::to_string(&freshness).unwrap();
+        let decoded: DepotFreshness = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.gate, "sporeGate");
+        assert_eq!(decoded.current, 13);
+        assert_eq!(decoded.architectures.len(), 2);
     }
 }
