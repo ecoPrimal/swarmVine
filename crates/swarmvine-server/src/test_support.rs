@@ -2,6 +2,11 @@
 // Copyright (C) 2026 ecoPrimals Project
 
 //! Integration test harness — starts JSON-RPC and gossip listeners on ephemeral endpoints.
+//!
+//! This module is Unix-only (UDS transport). On non-Unix platforms the test harness
+//! is not available and integration tests that depend on it are `#[cfg(unix)]` gated.
+
+#![cfg(unix)]
 
 use std::path::PathBuf;
 use std::sync::Arc;

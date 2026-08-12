@@ -3,13 +3,16 @@
 
 //! End-to-end integration tests for the swarmVine server.
 
-use std::path::Path;
 use std::time::Duration;
 use swarmvine_core::ribocipher;
 use swarmvine_core::{PrimalHealth, PrimalLifecycle, PrimalState, SwarmVinePrimal};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpStream, UnixStream};
+use tokio::net::TcpStream;
 
+#[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 #[cfg(unix)]
 use swarmvine_server::test_support::TestServer;
 
