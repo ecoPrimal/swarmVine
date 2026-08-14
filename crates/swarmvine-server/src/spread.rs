@@ -252,13 +252,22 @@ async fn relay_via_songbird(peer_addr: &str, payload: &str) -> Result<u32, Strin
     let songbird_socket = discover_songbird_socket()
         .ok_or_else(|| "songBird socket not found for relay".to_owned())?;
 
+    let parsed_payload: serde_json::Value =
+        serde_json::from_str(payload).unwrap_or_default();
+
+    let topic = parsed_payload
+        .pointer("/params/entries/0/topic")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("tower");
+
     let relay_request = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "gossip.relay",
         "params": {
             "target_peer": peer_addr,
             "target_method": "gossip.spread",
-            "payload": serde_json::from_str::<serde_json::Value>(payload).unwrap_or_default(),
+            "topic": topic,
+            "payload": parsed_payload,
         },
         "id": 1,
     });
@@ -774,5 +783,64 @@ mod tests {
         )
         .await;
         let _ = std::fs::remove_file(&sock);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relay_request_includes_topic_field() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let path = std::env::temp_dir().join(format!(
+            "swarmvine-mock-songbird-topic-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let captured = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let captured_clone = Arc::clone(&captured);
+
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let (mut rd, mut wr) = tokio::io::split(stream);
+                let mut prefix = [0u8; 2];
+                let _ = rd.read_exact(&mut prefix).await;
+                let mut reader = BufReader::new(rd);
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line).await;
+                *captured_clone.lock().await = line;
+                let _ = wr
+                    .write_all(b"{\"jsonrpc\":\"2.0\",\"result\":{\"accepted\":1},\"id\":1}\n")
+                    .await;
+            }
+        });
+
+        temp_env::async_with_vars(
+            [(
+                swarmvine_core::env_keys::SONGBIRD_SOCKET,
+                Some(path.to_str().unwrap()),
+            )],
+            async {
+                let payload = r#"{"jsonrpc":"2.0","method":"gossip.spread","params":{"entries":[{"topic":"tower","key":"test.key","payload":{},"origin_gate":"ironGate","nonce":"aabb","ttl":5,"version":1}]},"id":null}"#;
+                let accepted = relay_via_songbird("10.0.0.1:7800", payload).await.unwrap();
+                assert_eq!(accepted, 1);
+
+                let request_str = captured.lock().await.clone();
+                let request: serde_json::Value =
+                    serde_json::from_str(&request_str).expect("relay request must be valid JSON");
+                assert_eq!(request["method"], "gossip.relay");
+                assert_eq!(
+                    request["params"]["topic"], "tower",
+                    "relay must include topic from entries"
+                );
+                assert_eq!(request["params"]["target_peer"], "10.0.0.1:7800");
+                assert_eq!(request["params"]["target_method"], "gossip.spread");
+            },
+        )
+        .await;
+        let _ = std::fs::remove_file(&path);
     }
 }
