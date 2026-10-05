@@ -294,12 +294,13 @@ impl GossipEngine {
 
     /// Get current gossip table statistics.
     pub async fn stats(&self) -> GossipStats {
-        let (tower_entries, data_entries, compute_entries) = {
+        let (tower_entries, data_entries, compute_entries, defense_entries) = {
             let store = self.entries.read().await;
             (
                 store.get(&GossipTopic::Tower).map_or(0, HashMap::len),
                 store.get(&GossipTopic::Data).map_or(0, HashMap::len),
                 store.get(&GossipTopic::Compute).map_or(0, HashMap::len),
+                store.get(&GossipTopic::Defense).map_or(0, HashMap::len),
             )
         };
         let nonce_history_size = self.nonce_set.read().await.len();
@@ -309,6 +310,7 @@ impl GossipEngine {
             tower_entries,
             data_entries,
             compute_entries,
+            defense_entries,
             nonce_history_size,
             peer_count,
             total_ingested: self

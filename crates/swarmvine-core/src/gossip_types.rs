@@ -21,6 +21,8 @@ pub enum GossipTopic {
     Data,
     /// Resource capacity, build queues, inference bandwidth.
     Compute,
+    /// Fleet antibodies, quarantine broadcasts, immune system coordination.
+    Defense,
 }
 
 impl std::fmt::Display for GossipTopic {
@@ -29,6 +31,7 @@ impl std::fmt::Display for GossipTopic {
             Self::Tower => write!(f, "tower"),
             Self::Data => write!(f, "data"),
             Self::Compute => write!(f, "compute"),
+            Self::Defense => write!(f, "defense"),
         }
     }
 }
@@ -41,6 +44,7 @@ impl std::str::FromStr for GossipTopic {
             "tower" => Ok(Self::Tower),
             "data" => Ok(Self::Data),
             "compute" => Ok(Self::Compute),
+            "defense" => Ok(Self::Defense),
             _ => Err(()),
         }
     }
@@ -161,6 +165,8 @@ pub struct GossipStats {
     pub data_entries: usize,
     /// Entries per topic.
     pub compute_entries: usize,
+    /// Entries per topic.
+    pub defense_entries: usize,
     /// Total nonces in dedup history.
     pub nonce_history_size: usize,
     /// Known gossip peers.
