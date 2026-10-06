@@ -8,7 +8,7 @@ version = "0.1.0"
 wire_standard = "L2"
 method_gate = "JH-0"
 btsp_phase = 3
-gossip_domains = ["tower", "data", "compute"]
+gossip_domains = ["tower", "data", "compute", "defense"]
 
 [capabilities.health]
 owner = "swarmvine"

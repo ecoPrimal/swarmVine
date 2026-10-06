@@ -70,7 +70,7 @@ pub(crate) async fn handle_request(
                 "methods": METHODS,
                 "protocol": "jsonrpc-2.0",
                 "transport": ["uds", "tcp"],
-                "gossip_domains": ["tower", "data", "compute"],
+                "gossip_domains": ["tower", "data", "compute", "defense"],
             })
         }
         "btsp.negotiate" => {
