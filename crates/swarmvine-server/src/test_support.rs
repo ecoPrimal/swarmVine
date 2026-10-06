@@ -66,7 +66,7 @@ impl TestServer {
 
         let primal_gossip = Arc::clone(&primal);
         let gossip_task = tokio::spawn(async move {
-            let _ = crate::run_gossip_listener(gossip_port, primal_gossip).await;
+            let _ = crate::run_gossip_listener("127.0.0.1", gossip_port, primal_gossip).await;
         });
 
         wait_for_uds(&uds_path).await;

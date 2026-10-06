@@ -59,6 +59,11 @@ pub struct Cli {
     /// TCP port for cross-gate gossip (default 7800).
     #[arg(long, env = "GOSSIP_PORT", default_value = "7800")]
     pub gossip_port: u16,
+
+    /// Bind address for cross-gate gossip listener (default 127.0.0.1).
+    /// Set to WireGuard IP (e.g. 10.13.37.1) for mesh gossip.
+    #[arg(long, env = "GOSSIP_BIND", default_value = "127.0.0.1")]
+    pub gossip_bind: String,
 }
 
 /// Run the swarmVine server with parsed CLI arguments.
@@ -113,8 +118,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     });
 
     let gossip_primal = Arc::clone(&primal_arc);
+    let gossip_bind = cli.gossip_bind.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_gossip_listener(gossip_port, gossip_primal).await {
+        if let Err(e) = run_gossip_listener(&gossip_bind, gossip_port, gossip_primal).await {
             tracing::error!(error = %e, "Cross-gate gossip listener failed");
         }
     });
@@ -153,12 +159,13 @@ pub async fn run(cli: Cli) -> Result<()> {
 ///
 /// Returns an error if binding the TCP listener fails or accepting a connection fails.
 pub async fn run_gossip_listener(
+    bind: &str,
     port: u16,
     primal: Arc<swarmvine_core::SwarmVinePrimal>,
 ) -> Result<()> {
-    let addr = format!("127.0.0.1:{port}");
+    let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!(port, "Cross-gate gossip listener started");
+    tracing::info!(bind, port, "Cross-gate gossip listener started");
 
     let gate = method_gate::MethodGate::permissive();
 
