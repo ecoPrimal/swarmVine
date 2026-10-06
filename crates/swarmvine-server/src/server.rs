@@ -8,7 +8,7 @@
 //! - **Phase 3 (G65)**: Protocol negotiation on single socket (tarpc or JSON-RPC)
 
 use anyhow::Result;
-use swarmvine_core::protocol_negotiation::{IpcProtocol, negotiate_server};
+use swarmvine_core::protocol_negotiation::{IpcProtocol, NegotiateResult, negotiate_server};
 use swarmvine_core::ribocipher;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{info, warn};
@@ -288,11 +288,26 @@ async fn handle_negotiated_connection<
         .unwrap_or(100);
 
     match negotiate_server(&mut stream, server_supported, timeout).await {
-        Ok(Some(IpcProtocol::Tarpc)) => {
+        Ok(NegotiateResult::Negotiated(IpcProtocol::Tarpc)) => {
             info!("G65: tarpc selected — handing off to tarpc handler");
             crate::tarpc_server::handle_tarpc_stream(stream);
         }
-        Ok(Some(IpcProtocol::JsonRpc) | None) => {
+        Ok(NegotiateResult::Negotiated(IpcProtocol::JsonRpc)) => {
+            handle_jsonrpc(BufReader::new(stream), primal, gate).await;
+        }
+        Ok(NegotiateResult::Legacy(consumed_line)) => {
+            // Client sent raw JSON-RPC without G65 negotiation.
+            // Process the already-consumed line, then continue reading.
+            let response =
+                crate::dispatch::handle_request(consumed_line.trim(), primal, gate).await;
+            if let Err(e) = stream.write_all(response.as_bytes()).await {
+                warn!("Write error on legacy G65 fallback: {e}");
+                return;
+            }
+            let _ = stream.write_all(b"\n").await;
+            handle_jsonrpc(BufReader::new(stream), primal, gate).await;
+        }
+        Ok(NegotiateResult::Timeout) => {
             handle_jsonrpc(BufReader::new(stream), primal, gate).await;
         }
         Err(e) => {

@@ -76,19 +76,36 @@ pub fn select_protocol(
     IpcProtocol::JsonRpc
 }
 
+/// Result of G65 protocol negotiation.
+#[derive(Debug)]
+pub enum NegotiateResult {
+    /// Client sent `PROTOCOLS:` header and a protocol was selected.
+    Negotiated(IpcProtocol),
+    /// Client sent a non-PROTOCOLS line (legacy JSON-RPC). The consumed
+    /// line is returned so the caller can feed it to the JSON-RPC handler
+    /// without data loss.
+    Legacy(String),
+    /// Timeout or empty read — no data consumed from the transport.
+    Timeout,
+}
+
 /// Server-side negotiation: read client request, select best, respond.
 ///
-/// Returns `None` if no `PROTOCOLS:` line received (backward compat).
+/// Returns [`NegotiateResult::Legacy`] with the consumed line if the client
+/// sends raw JSON-RPC instead of a `PROTOCOLS:` header, preventing the
+/// data-loss bug where `BufReader` consumed the request line during
+/// protocol detection.
 ///
 /// # Errors
 ///
 /// Returns an error if writing the negotiated protocol response to the transport
-/// fails. Read failures and timeouts yield `Ok(None)` for backward compatibility.
+/// fails. Read failures and timeouts yield [`NegotiateResult::Timeout`] for
+/// backward compatibility.
 pub async fn negotiate_server<T>(
     transport: &mut T,
     server_supported: &[IpcProtocol],
     timeout_ms: u64,
-) -> Result<Option<IpcProtocol>, std::io::Error>
+) -> Result<NegotiateResult, std::io::Error>
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
@@ -113,7 +130,7 @@ where
                     .collect();
 
                 if protocols.is_empty() {
-                    return Ok(None);
+                    return Ok(NegotiateResult::Legacy(line));
                 }
 
                 let selected = select_protocol(&protocols, server_supported);
@@ -121,23 +138,23 @@ where
                 reader.get_mut().write_all(response.as_bytes()).await?;
                 reader.get_mut().flush().await?;
                 info!("server negotiated: {selected}");
-                Ok(Some(selected))
+                Ok(NegotiateResult::Negotiated(selected))
             } else {
                 warn!("no protocol negotiation, assuming JSON-RPC");
-                Ok(None)
+                Ok(NegotiateResult::Legacy(line))
             }
         }
         Ok(Err(e)) => {
             warn!("negotiation read error: {e}");
-            Ok(None)
+            Ok(NegotiateResult::Timeout)
         }
-        _ => Ok(None),
+        _ => Ok(NegotiateResult::Timeout),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{IpcProtocol, negotiate_server, select_protocol};
+    use super::{IpcProtocol, NegotiateResult, negotiate_server, select_protocol};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     #[test]
@@ -218,12 +235,12 @@ mod tests {
         reader.read_line(&mut line).await.unwrap();
         assert_eq!(line.trim(), "PROTOCOL: tarpc");
 
-        let negotiated = server_task.await.unwrap().unwrap();
-        assert_eq!(negotiated, Some(IpcProtocol::Tarpc));
+        let result = server_task.await.unwrap().unwrap();
+        assert!(matches!(result, NegotiateResult::Negotiated(IpcProtocol::Tarpc)));
     }
 
     #[tokio::test]
-    async fn negotiation_legacy_client_no_protocols_line() {
+    async fn negotiation_legacy_client_returns_consumed_line() {
         let (client, server) = tokio::io::duplex(256);
         let (mut client, mut server) = (client, server);
 
@@ -234,7 +251,12 @@ mod tests {
         client.write_all(b"{\"jsonrpc\":\"2.0\"}\n").await.unwrap();
         client.flush().await.unwrap();
 
-        let negotiated = server_task.await.unwrap().unwrap();
-        assert_eq!(negotiated, None);
+        let result = server_task.await.unwrap().unwrap();
+        match result {
+            NegotiateResult::Legacy(line) => {
+                assert_eq!(line.trim(), "{\"jsonrpc\":\"2.0\"}");
+            }
+            other => panic!("expected Legacy, got {other:?}"),
+        }
     }
 }

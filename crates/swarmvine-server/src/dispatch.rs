@@ -381,7 +381,7 @@ mod tests {
             serde_json::from_str(&handle_request(req, &primal, &gate).await).unwrap();
         assert_eq!(resp["result"]["primal"], PRIMAL_NAME);
         let domains = resp["result"]["gossip_domains"].as_array().unwrap();
-        assert_eq!(domains.len(), 3);
+        assert_eq!(domains.len(), 4);
     }
 
     #[tokio::test]
@@ -533,7 +533,7 @@ mod tests {
         assert_eq!(resp["result"]["primal"], PRIMAL_NAME);
         assert_eq!(resp["result"]["protocol"], "jsonrpc-2.0");
         let domains = resp["result"]["gossip_domains"].as_array().unwrap();
-        assert_eq!(domains.len(), 3);
+        assert_eq!(domains.len(), 4);
     }
 
     #[tokio::test]
