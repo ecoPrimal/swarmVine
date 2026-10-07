@@ -205,12 +205,21 @@ async fn handle_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
 }
 
 async fn handle_jsonrpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    mut reader: BufReader<S>,
+    reader: BufReader<S>,
     primal: &swarmvine_core::SwarmVinePrimal,
     gate: &crate::method_gate::MethodGate,
 ) {
+    handle_jsonrpc_with_count(reader, primal, gate, 0).await;
+}
+
+async fn handle_jsonrpc_with_count<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    mut reader: BufReader<S>,
+    primal: &swarmvine_core::SwarmVinePrimal,
+    gate: &crate::method_gate::MethodGate,
+    initial_count: u32,
+) {
     let mut line = String::new();
-    let mut requests_served: u32 = 0;
+    let mut requests_served: u32 = initial_count;
     loop {
         line.clear();
         match reader.read_line(&mut line).await {
@@ -271,8 +280,8 @@ async fn handle_jsonrpc_legacy<S: tokio::io::AsyncRead + tokio::io::AsyncWrite +
         return;
     }
 
-    // Subsequent lines: normal loop
-    handle_jsonrpc(reader, primal, gate).await;
+    // Subsequent lines: normal loop (count first request so close is DEBUG)
+    handle_jsonrpc_with_count(reader, primal, gate, 1).await;
 }
 
 /// G65 Protocol Negotiation handler.
@@ -311,7 +320,8 @@ async fn handle_negotiated_connection<
                 return;
             }
             let _ = stream.write_all(b"\n").await;
-            handle_jsonrpc(BufReader::new(stream), primal, gate).await;
+            // Count the already-served request so close-after-gossip is DEBUG not WARN
+            handle_jsonrpc_with_count(BufReader::new(stream), primal, gate, 1).await;
         }
         Ok(NegotiateResult::Timeout) => {
             handle_jsonrpc(BufReader::new(stream), primal, gate).await;
