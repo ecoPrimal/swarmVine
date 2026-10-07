@@ -165,7 +165,7 @@ async fn handle_gossip_inject(
         .and_then(serde_json::Value::as_str)
         .and_then(|s| s.parse::<GossipTopic>().ok())
     else {
-        return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
+        return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute|defense)" });
     };
 
     let key = match params.get("key").and_then(serde_json::Value::as_str) {
@@ -196,7 +196,7 @@ async fn handle_gossip_query(
         .and_then(serde_json::Value::as_str)
         .and_then(|s| s.parse::<GossipTopic>().ok())
     else {
-        return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
+        return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute|defense)" });
     };
 
     let prefix = params.get("key_prefix").and_then(serde_json::Value::as_str);
@@ -242,7 +242,7 @@ async fn handle_gossip_subscribe(
         .and_then(serde_json::Value::as_str)
         .and_then(|s| s.parse::<GossipTopic>().ok())
     else {
-        return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute)" });
+        return serde_json::json!({ "error": "Invalid or missing 'topic' (tower|data|compute|defense)" });
     };
 
     let prefix = params.get("key_prefix").and_then(serde_json::Value::as_str);
@@ -341,7 +341,7 @@ async fn vine_bat_preaccept(entry: &GossipEntry) -> bool {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("allow");
         return match verdict {
-            "deny" | "reject" => false,
+            "deny" | "reject" | "block" => false,
             _ => true, // allow, warn → pass through
         };
     }

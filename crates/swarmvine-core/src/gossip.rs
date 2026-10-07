@@ -57,6 +57,7 @@ impl GossipEngine {
         entries.insert(GossipTopic::Tower, HashMap::new());
         entries.insert(GossipTopic::Data, HashMap::new());
         entries.insert(GossipTopic::Compute, HashMap::new());
+        entries.insert(GossipTopic::Defense, HashMap::new());
 
         let (subscription_tx, _) = broadcast::channel(SUBSCRIPTION_CAPACITY);
 
@@ -134,7 +135,7 @@ impl GossipEngine {
             return IngestResult::Rejected;
         }
 
-        // Store the entry
+        // Store the entry (defense-aware merge for opsonize tags)
         let should_forward = {
             let mut store = self.entries.write().await;
             let topic_store = store.entry(entry.topic).or_default();
@@ -144,9 +145,34 @@ impl GossipEngine {
             }
 
             let result = match topic_store.get(&entry.key) {
-                Some(existing) if existing.version >= entry.version => false,
+                Some(existing) if existing.version >= entry.version => {
+                    // Defense opsonize tags: merge detectors + bump confidence
+                    // even if version is not newer (corroboration from another gate)
+                    if entry.topic == GossipTopic::Defense
+                        && entry.key.starts_with("defense.opsonize:")
+                        && existing.origin_gate != entry.origin_gate
+                    {
+                        let merged = merge_opsonize_payload(existing, &entry);
+                        topic_store.insert(Arc::clone(&entry.key), merged);
+                        true
+                    } else {
+                        false
+                    }
+                }
                 _ => {
-                    topic_store.insert(Arc::clone(&entry.key), entry.clone());
+                    // Defense merge: also check if we're updating an existing tag
+                    if entry.topic == GossipTopic::Defense
+                        && entry.key.starts_with("defense.opsonize:")
+                    {
+                        if let Some(existing) = topic_store.get(&entry.key) {
+                            let merged = merge_opsonize_payload(existing, &entry);
+                            topic_store.insert(Arc::clone(&entry.key), merged);
+                        } else {
+                            topic_store.insert(Arc::clone(&entry.key), entry.clone());
+                        }
+                    } else {
+                        topic_store.insert(Arc::clone(&entry.key), entry.clone());
+                    }
                     true
                 }
             };
@@ -362,6 +388,113 @@ impl GossipEngine {
         entry.last_exchange_epoch = now;
         drop(guard);
     }
+}
+
+/// Merge two defense opsonize payloads: union detectors, max confidence, bump match_count,
+/// and record all corroborating gates. The result uses the newer entry's envelope
+/// but accumulates intelligence from both sightings.
+fn merge_opsonize_payload(existing: &GossipEntry, incoming: &GossipEntry) -> GossipEntry {
+    let mut merged = if incoming.version >= existing.version {
+        incoming.clone()
+    } else {
+        existing.clone()
+    };
+
+    // Union the detectors arrays from both payloads
+    let mut detectors: Vec<String> = Vec::new();
+    for payload in [&existing.payload, &incoming.payload] {
+        if let Some(arr) = payload.get("detectors").and_then(serde_json::Value::as_array) {
+            for d in arr {
+                if let Some(s) = d.as_str() {
+                    if !detectors.iter().any(|existing| existing == s) {
+                        detectors.push(s.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    // Max confidence from both sightings
+    let confidence = existing
+        .payload
+        .get("confidence")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0)
+        .max(
+            incoming
+                .payload
+                .get("confidence")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0),
+        );
+
+    // Sum match_count (corroboration)
+    let match_count = existing
+        .payload
+        .get("match_count")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1)
+        + incoming
+            .payload
+            .get("match_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1);
+
+    // Track corroborating gates
+    let mut corroborating_gates: Vec<String> = Vec::new();
+    for payload in [&existing.payload, &incoming.payload] {
+        if let Some(gate) = payload.get("origin_gate").and_then(serde_json::Value::as_str) {
+            if !corroborating_gates.contains(&gate.to_owned()) {
+                corroborating_gates.push(gate.to_owned());
+            }
+        }
+        if let Some(arr) = payload
+            .get("corroborating_gates")
+            .and_then(serde_json::Value::as_array)
+        {
+            for g in arr {
+                if let Some(s) = g.as_str() {
+                    if !corroborating_gates.contains(&s.to_owned()) {
+                        corroborating_gates.push(s.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    // Build merged payload by overlaying merged fields onto the winner
+    if let serde_json::Value::Object(ref mut map) = merged.payload {
+        map.insert("detectors".to_owned(), serde_json::json!(detectors));
+        map.insert("confidence".to_owned(), serde_json::json!(confidence));
+        map.insert("match_count".to_owned(), serde_json::json!(match_count));
+        map.insert(
+            "corroborating_gates".to_owned(),
+            serde_json::json!(corroborating_gates),
+        );
+        map.insert(
+            "last_confirmed_epoch".to_owned(),
+            serde_json::json!(std::cmp::max(
+                existing.payload.get("last_confirmed_epoch").and_then(serde_json::Value::as_u64).unwrap_or(0),
+                incoming.payload.get("last_confirmed_epoch").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            )),
+        );
+    }
+
+    // Use latest version
+    merged.version = std::cmp::max(existing.version, incoming.version);
+    // Extend expiry to whichever is later
+    merged.expires_at_epoch =
+        std::cmp::max(existing.expires_at_epoch, incoming.expires_at_epoch);
+
+    info!(
+        key = %merged.key,
+        detectors = detectors.len(),
+        match_count,
+        gates = corroborating_gates.len(),
+        "Defense opsonize tag merged (multi-gate corroboration)"
+    );
+
+    merged
 }
 
 #[cfg(test)]
@@ -701,5 +834,66 @@ mod tests {
             engine.ingest(older, Some("peer1")).await,
             IngestResult::Duplicate
         );
+    }
+
+    #[tokio::test]
+    async fn defense_opsonize_merge_unions_detectors() {
+        let engine = test_engine();
+
+        // Gate 1 detects content_gate + ip_rotation
+        let mut e1 = GossipEntry::new(
+            GossipTopic::Defense,
+            "defense.opsonize:49e77ea75aa7666e",
+            serde_json::json!({
+                "behavioral_hash": "49e77ea75aa7666e",
+                "detectors": ["content_gate", "ip_rotation"],
+                "confidence": 0.65,
+                "origin_gate": "golgiBody",
+                "match_count": 3,
+            }),
+            "golgiBody",
+        );
+        e1.version = 100;
+        engine.ingest(e1, None).await;
+
+        // Gate 2 detects content_gate + stealth_ua (corroboration)
+        let mut e2 = GossipEntry::new(
+            GossipTopic::Defense,
+            "defense.opsonize:49e77ea75aa7666e",
+            serde_json::json!({
+                "behavioral_hash": "49e77ea75aa7666e",
+                "detectors": ["content_gate", "stealth_ua"],
+                "confidence": 0.80,
+                "origin_gate": "sporeGate",
+                "match_count": 2,
+            }),
+            "sporeGate",
+        );
+        e2.version = 99; // older version — should still merge for defense
+
+        let result = engine.ingest(e2, Some("sporeGate")).await;
+        assert_eq!(result, IngestResult::Accepted);
+
+        let entries = engine
+            .query(GossipTopic::Defense, Some("defense.opsonize:49e77ea"))
+            .await;
+        assert_eq!(entries.len(), 1);
+
+        let payload = &entries[0].payload;
+        let detectors = payload["detectors"].as_array().unwrap();
+        // Should have union: content_gate, ip_rotation, stealth_ua
+        assert_eq!(detectors.len(), 3, "detectors should be unioned: {detectors:?}");
+
+        // Max confidence
+        let confidence = payload["confidence"].as_f64().unwrap();
+        assert!((confidence - 0.80).abs() < 0.001, "should take max confidence");
+
+        // Sum match_count
+        let match_count = payload["match_count"].as_u64().unwrap();
+        assert_eq!(match_count, 5, "should sum match_count: 3 + 2");
+
+        // Corroborating gates
+        let gates = payload["corroborating_gates"].as_array().unwrap();
+        assert_eq!(gates.len(), 2, "both gates should be recorded: {gates:?}");
     }
 }
