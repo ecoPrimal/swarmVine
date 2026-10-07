@@ -11,7 +11,7 @@ use anyhow::Result;
 use swarmvine_core::protocol_negotiation::{IpcProtocol, NegotiateResult, negotiate_server};
 use swarmvine_core::ribocipher;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub(crate) use swarmvine_core::transport::TransportEndpoint;
 
@@ -210,18 +210,24 @@ async fn handle_jsonrpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>
     gate: &crate::method_gate::MethodGate,
 ) {
     let mut line = String::new();
+    let mut requests_served: u32 = 0;
     loop {
         line.clear();
         match reader.read_line(&mut line).await {
             Ok(0) => return,
             Err(e) => {
-                warn!("Read error: {e}");
+                if requests_served > 0 {
+                    debug!("connection closed after {requests_served} request(s): {e}");
+                } else {
+                    warn!("Read error (no requests served): {e}");
+                }
                 return;
             }
             Ok(_) => {}
         }
 
         let response = crate::dispatch::handle_request(line.trim(), primal, gate).await;
+        requests_served += 1;
         let writer = reader.get_mut();
         if let Err(e) = writer.write_all(response.as_bytes()).await {
             warn!("Write error: {e}");

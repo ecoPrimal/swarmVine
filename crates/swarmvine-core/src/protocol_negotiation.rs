@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// RPC protocol variants supported by the ecoPrimals ecosystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -140,7 +140,7 @@ where
                 info!("server negotiated: {selected}");
                 Ok(NegotiateResult::Negotiated(selected))
             } else {
-                warn!("no protocol negotiation, assuming JSON-RPC");
+                debug!("no protocol negotiation, assuming JSON-RPC");
                 Ok(NegotiateResult::Legacy(line))
             }
         }
