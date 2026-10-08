@@ -388,6 +388,66 @@ impl GossipEngine {
         entry.last_exchange_epoch = now;
         drop(guard);
     }
+
+    /// Record round-trip latency from a gossip exchange.
+    ///
+    /// Updates EWMA (exponentially weighted moving average) with α=0.3
+    /// and recomputes gravitational force. Every node is its own nucleus —
+    /// gravity reflects how "close" this peer is in the mesh topology.
+    pub async fn record_latency(&self, peer: &str, rtt_ms: u64, via_relay: bool) {
+        let mut guard = self.peer_stats.write().await;
+        let entry = guard.entry(peer.to_owned()).or_default();
+        entry.last_rtt_ms = rtt_ms;
+        entry.via_relay = via_relay;
+        // EWMA with α=0.3 (new sample weight), integer approximation
+        if entry.ewma_rtt_ms == 0 {
+            entry.ewma_rtt_ms = rtt_ms;
+        } else {
+            // ewma = 0.7 * old + 0.3 * new (scaled by 1000 for integer math)
+            entry.ewma_rtt_ms = (entry.ewma_rtt_ms * 700 + rtt_ms * 300) / 1000;
+        }
+        Self::recompute_gravity(entry);
+        drop(guard);
+    }
+
+    /// Record a failed exchange attempt (both TCP and relay failed).
+    pub async fn record_failure(&self, peer: &str) {
+        let mut guard = self.peer_stats.write().await;
+        let entry = guard.entry(peer.to_owned()).or_default();
+        entry.exchange_failures += 1;
+        Self::recompute_gravity(entry);
+        drop(guard);
+    }
+
+    /// Recompute gravitational force for a peer.
+    ///
+    /// `gravity = (1_000_000 / max(1, ewma_rtt_ms)) * reliability`
+    /// where `reliability = total_exchanges / max(1, total_exchanges + failures)`
+    ///
+    /// Higher gravity = closer, more reliable peer. Used by the epidemic loop
+    /// to prioritize gossip delivery — critical entries reach high-gravity
+    /// peers first, cross-protecting the mesh against partitions.
+    fn recompute_gravity(stats: &mut PeerStats) {
+        let rtt_factor = 1_000_000u64 / stats.ewma_rtt_ms.max(1);
+        let total_exchanges = stats.entries_sent + stats.entries_received;
+        let reliability = if total_exchanges == 0 {
+            500 // 50% baseline for new peers
+        } else {
+            (total_exchanges * 1000) / (total_exchanges + stats.exchange_failures).max(1)
+        };
+        stats.gravity = (rtt_factor * reliability) / 1000;
+    }
+
+    /// Return peers sorted by gravitational force (highest first).
+    ///
+    /// Used by the epidemic loop to prioritize gossip delivery.
+    /// Critical entries should be sent to high-gravity peers first.
+    pub async fn peers_by_gravity(&self) -> Vec<(String, PeerStats)> {
+        let guard = self.peer_stats.read().await;
+        let mut peers: Vec<_> = guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        peers.sort_by(|a, b| b.1.gravity.cmp(&a.1.gravity));
+        peers
+    }
 }
 
 /// Merge two defense opsonize payloads: union detectors, max confidence, bump match_count,

@@ -205,7 +205,7 @@ async fn handle_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
 }
 
 async fn handle_jsonrpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    reader: BufReader<S>,
+    mut reader: BufReader<S>,
     primal: &swarmvine_core::SwarmVinePrimal,
     gate: &crate::method_gate::MethodGate,
 ) {

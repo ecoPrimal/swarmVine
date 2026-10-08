@@ -82,26 +82,27 @@ pub(crate) async fn epidemic_loop(
             let payload = Arc::clone(&batch_json);
             let engine = Arc::clone(&primal);
             tokio::spawn(async move {
+                let start = std::time::Instant::now();
                 match spread_to_peer(&addr, &payload).await {
                     Ok(accepted) => {
-                        debug!(peer = %addr, accepted, "Gossip spread delivered via TCP");
-                        engine
-                            .engine()
-                            .record_send(&addr, u64::from(accepted))
-                            .await;
+                        let rtt_ms = start.elapsed().as_millis() as u64;
+                        debug!(peer = %addr, accepted, rtt_ms, "Gossip spread delivered via TCP");
+                        engine.engine().record_send(&addr, u64::from(accepted)).await;
+                        engine.engine().record_latency(&addr, rtt_ms, false).await;
                     }
                     Err(tcp_err) => {
                         debug!(peer = %addr, error = %tcp_err, "TCP spread failed, trying songBird relay");
+                        let relay_start = std::time::Instant::now();
                         match relay_via_songbird(&addr, &payload).await {
                             Ok(accepted) => {
-                                debug!(peer = %addr, accepted, "Gossip spread delivered via songBird relay");
-                                engine
-                                    .engine()
-                                    .record_send(&addr, u64::from(accepted))
-                                    .await;
+                                let rtt_ms = relay_start.elapsed().as_millis() as u64;
+                                debug!(peer = %addr, accepted, rtt_ms, "Gossip spread delivered via songBird relay");
+                                engine.engine().record_send(&addr, u64::from(accepted)).await;
+                                engine.engine().record_latency(&addr, rtt_ms, true).await;
                             }
                             Err(relay_err) => {
                                 warn!(peer = %addr, tcp_error = %tcp_err, relay_error = %relay_err, "Gossip spread failed (TCP + relay)");
+                                engine.engine().record_failure(&addr).await;
                             }
                         }
                     }

@@ -143,7 +143,14 @@ pub enum IngestResult {
     AtCapacity,
 }
 
-/// Per-peer exchange statistics.
+/// Per-peer exchange statistics with gravitational distance metrics.
+///
+/// Every node in the mesh is its own nucleus. The `gravity` field
+/// represents the relative "pull" of this peer — a function of latency,
+/// exchange volume, and reliability. Higher gravity = closer peer in
+/// the mesh topology. The epidemic loop can use gravity to prioritize
+/// which peers receive gossip first (closer peers get critical entries
+/// faster, cross-protecting against partition).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PeerStats {
     /// Total entries received from this peer.
@@ -154,6 +161,20 @@ pub struct PeerStats {
     pub last_exchange_epoch: u64,
     /// Entries rejected from this peer (duplicates, expired, invalid).
     pub entries_rejected: u64,
+    /// Last measured round-trip latency in milliseconds.
+    /// Updated on every successful gossip exchange.
+    pub last_rtt_ms: u64,
+    /// Exponentially weighted moving average of RTT (milliseconds).
+    /// Smooths out jitter for routing decisions.
+    pub ewma_rtt_ms: u64,
+    /// Gravitational force — higher = closer/more reliable peer.
+    /// Computed as: `1_000_000 / max(1, ewma_rtt_ms) * reliability_factor`
+    /// where `reliability_factor = sent / max(1, sent + failed)`.
+    pub gravity: u64,
+    /// Count of failed exchange attempts (TCP + relay both failed).
+    pub exchange_failures: u64,
+    /// Whether this peer was reached via songBird relay (indirect path).
+    pub via_relay: bool,
 }
 
 /// Gossip table statistics.
