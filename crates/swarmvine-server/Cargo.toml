@@ -29,6 +29,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 tarpc = { workspace = true }
 tokio-serde = { workspace = true }
+tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = { workspace = true }
 
 [dev-dependencies]

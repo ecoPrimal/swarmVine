@@ -39,7 +39,7 @@ pub(crate) async fn run(
     primal_name: &str,
     family_id: Option<&str>,
     injected_endpoint: Option<&TransportEndpoint>,
-    primal: &swarmvine_core::SwarmVinePrimal,
+    primal: &std::sync::Arc<swarmvine_core::SwarmVinePrimal>,
     negotiate: bool,
 ) -> Result<()> {
     let endpoint = injected_endpoint
@@ -293,7 +293,7 @@ async fn handle_negotiated_connection<
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 >(
     mut stream: S,
-    primal: &swarmvine_core::SwarmVinePrimal,
+    primal: &std::sync::Arc<swarmvine_core::SwarmVinePrimal>,
     gate: &crate::method_gate::MethodGate,
 ) {
     let server_supported = IpcProtocol::all_supported();
@@ -305,7 +305,7 @@ async fn handle_negotiated_connection<
     match negotiate_server(&mut stream, server_supported, timeout).await {
         Ok(NegotiateResult::Negotiated(IpcProtocol::Tarpc)) => {
             info!("G65: tarpc selected — handing off to tarpc handler");
-            crate::tarpc_server::handle_tarpc_stream(stream);
+            crate::tarpc_server::handle_tarpc_stream(stream, std::sync::Arc::clone(primal));
         }
         Ok(NegotiateResult::Negotiated(IpcProtocol::JsonRpc)) => {
             handle_jsonrpc(BufReader::new(stream), primal, gate).await;
@@ -493,7 +493,7 @@ mod tests {
         request_line: Option<&str>,
     ) -> (String, String) {
         let (client, server) = tokio::io::duplex(8192);
-        let primal = make_primal();
+        let primal = std::sync::Arc::new(make_primal());
         let gate = make_gate();
 
         let server_task = tokio::spawn(async move {

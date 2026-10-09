@@ -108,17 +108,33 @@ pub(crate) async fn start_tarpc_listener(
 /// G65: Handle a pre-negotiated tarpc stream (single-socket mode).
 ///
 /// Called when protocol negotiation selected tarpc on the shared socket.
+/// Uses `tarpc::serde_transport::new()` with length-delimited framing to serve
+/// tarpc on an arbitrary `AsyncRead + AsyncWrite` stream — the same pattern
+/// proven in skunkBat's `serve_tarpc_stream`.
+#[cfg(unix)]
 pub(crate) fn handle_tarpc_stream<
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 >(
-    _stream: S,
+    stream: S,
+    primal: std::sync::Arc<swarmvine_core::SwarmVinePrimal>,
 ) {
-    // tarpc 0.37 requires its own listener for transport framing (bincode + length-prefix).
-    // Single-socket G65 tarpc requires tarpc upstream support for arbitrary AsyncRead/Write.
-    // Track: https://github.com/google/tarpc/issues — convergence target: tarpc 0.38+.
-    tracing::warn!(
-        "G65 tarpc negotiated but single-socket transport not yet supported by tarpc 0.37"
-    );
+    tokio::spawn(async move {
+        let handler = SwarmVineServiceHandler { primal };
+
+        let transport = tarpc::serde_transport::new(
+            tokio_util::codec::length_delimited::Builder::new()
+                .max_frame_length(usize::MAX)
+                .new_framed(stream),
+            tokio_serde::formats::Bincode::default(),
+        );
+
+        tarpc::server::BaseChannel::with_defaults(transport)
+            .execute(handler.serve())
+            .for_each(|response| async move {
+                tokio::spawn(response);
+            })
+            .await;
+    });
 }
 
 /// tarpc service handler — bridges the tarpc trait to the primal implementation.

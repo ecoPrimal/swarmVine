@@ -1025,6 +1025,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-serde",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
